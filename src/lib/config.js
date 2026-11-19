@@ -7,19 +7,47 @@ export const WEBSITE_URL = "https://lastpick-ce569.web.app";
 export const APP_VARIANT = import.meta.env?.VITE_APP_VARIANT || "web";
 export const IS_OWNER_APP = APP_VARIANT === "owner";
 export const IS_CUSTOMER_APP = APP_VARIANT === "customer";
+// true inside the Play Store apps (Capacitor). Google Play doesn't allow selling app features with an outside
+// payment gateway inside the app, so payment screens are hidden there (see README "Payments and Google Play").
+export const IS_NATIVE = typeof window !== "undefined" && !!window.Capacitor?.isNativePlatform?.();
 
-// Prices shown in the app. The amount actually charged comes from the Razorpay plans
-// (RAZORPAY_PLAN_CUSTOMER / RAZORPAY_PLAN_OWNER), so keep both in sync.
+// ---- Legal details shown in the app (Consumer Protection (E-Commerce) Rules 2020, IT Rules 2021, DPDP Act 2023) ----
+// Fill these in .env.production before launch. As a personal (individual) publisher, use your own legal name and address.
+const env = import.meta.env || {};
+export const LEGAL = {
+  operator: env.VITE_LEGAL_NAME || "",
+  address: env.VITE_LEGAL_ADDRESS || "",
+  grievanceOfficer: env.VITE_GRIEVANCE_OFFICER || "",
+  grievanceEmail: env.VITE_GRIEVANCE_EMAIL || SUPPORT_EMAIL,
+  grievancePhone: env.VITE_GRIEVANCE_PHONE || "",
+};
+// Bump when the privacy notice or terms change: everyone is asked to accept again. Keep in sync with functions/index.js.
+export const CONSENT_VERSION = "2026-11-19";
+// A business picks a main category plus up to 2 more, and can post only in those.
+export const MAX_CATEGORIES = 3;
+// Each business can post this many offers per day (India time). Keep in sync with functions/index.js.
+export const POSTS_PER_DAY = 3;
+export const GRIEVANCE_TYPES = ["Offer or business", "My account or data (privacy)", "A review", "Payments or plans", "Something else"];
+export const REVIEW_REPORT_REASONS = ["Fake or paid review", "Abusive or hateful", "Personal information", "Not about this business", "Something else"];
+
+// Plans. Everyone gets a free month first: customers from sign-up, businesses from the day they're verified.
+// After that: Customer Pass from ₹149/month, Business Pro (for verified business partners) from ₹499/month.
+// Longer plans cost less per month. Payments are not live yet; nobody is charged until they are switched on.
+export const TRIAL_DAYS = 30;
 export const PLANS = {
   customer: {
-    id: "customer", name: "Customer Pass", price: 49,
-    perks: ["See every owner's phone number", "Call or WhatsApp owners directly", "Share your number with owners in one tap", "Keep a list of owners you contacted"],
+    id: "customer", name: "Customer Pass", price: 149,
+    options: [{ months: 1, price: 149 }, { months: 3, price: 399 }, { months: 6, price: 749 }, { months: 12, price: 1399 }],
+    perks: ["See every business's phone number", "Call or WhatsApp businesses directly", "Share your number in one tap", "Keep a list of businesses you contacted"],
   },
   owner: {
-    id: "owner", name: "Owner Pro", price: 499,
-    perks: ["Post unlimited offers", "Get customers' numbers when they're interested", "Shown to every customer nearby", "See views and leads for each offer"],
+    id: "owner", name: "Business Pro", price: 499,
+    options: [{ months: 1, price: 499 }, { months: 3, price: 1349 }, { months: 6, price: 2499 }, { months: 12, price: 4499 }],
+    perks: ["Post unlimited offers", "Get customers' numbers when they're interested", "Shown to customers within 30 km", "Views, leads and reviews for every offer"],
   },
 };
+export const planLabel = (m) => (m === 12 ? "1 year" : `${m} month${m > 1 ? "s" : ""}`);
+export const savePct = (plan, o) => Math.round((1 - o.price / (PLANS[plan].price * o.months)) * 100);
 
 // Default map centre when the user doesn't share location.
 export const DEFAULT_LOCATION = { lat: 12.9716, lng: 77.5946, label: "Bengaluru" };
@@ -111,4 +139,5 @@ export const MAJOR_CITIES = [
 export const cityKey = (name) => String(name || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 
 // Data retention (days). The nightly cleanup job in functions/index.js uses the same numbers.
-export const RETENTION = { endedOfferVisibleDays: 7, archiveDays: 365, leadsDays: 180, contactsDays: 180, reportsDays: 365 };
+// Logs of number exchanges are kept 1 year (DPDP Rules 2025, rule 8(3)). Keep in sync with functions/index.js.
+export const RETENTION = { endedOfferVisibleDays: 7, archiveDays: 365, leadsDays: 365, contactsDays: 365, reportsDays: 365, auditDays: 365, closedGrievanceDays: 730 };

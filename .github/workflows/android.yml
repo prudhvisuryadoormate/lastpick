@@ -1,9 +1,11 @@
-name: Android apps (APK)
+name: Android apps (APK + Play Store AAB)
 
 # Builds two Android apps from the same web app with Capacitor:
 #   LastPick           (customers)  package in.lastpick.app
 #   LastPick Business  (owners)     package in.lastpick.business
-# Both use the live Firebase backend. The APKs are attached to the "apk-latest" GitHub release.
+# Both use the live Firebase backend. Test APKs are attached to the "apk-latest" GitHub release.
+# Play Store: when the ANDROID_KEYSTORE_* secrets exist, a signed release bundle (.aab) is built for each app,
+# targeting Android 16 (API 36) as Google Play requires for new apps and updates.
 on:
   workflow_dispatch:
   push:
@@ -35,12 +37,13 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: 21
 
       - name: Install
         run: |
           npm install --no-audit --no-fund
-          npm install --no-save --no-audit --no-fund @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 @capacitor/assets@3
+          npm install --no-save --no-audit --no-fund @capacitor/core@latest @capacitor/cli@latest @capacitor/android@latest @capacitor/assets@latest
+          npx cap --version
 
       - name: Build web app (${{ matrix.variant }})
         run: npm run build
@@ -55,18 +58,24 @@ jobs:
             "appName": "${{ matrix.app_name }}",
             "webDir": "dist",
             "server": { "androidScheme": "https" },
-            "android": { "backgroundColor": "#1b1d3a" }
+            "android": { "backgroundColor": "#16171D" }
           }
           EOF
           npx cap add android
           # location (distance + map) permissions
           sed -i 's#<uses-permission android:name="android.permission.INTERNET" />#<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />#' android/app/src/main/AndroidManifest.xml
           grep -n "permission" android/app/src/main/AndroidManifest.xml
+          # Google Play: target Android 16 (API level 36)
+          sed -i -E 's/(compileSdkVersion|targetSdkVersion) = [0-9]+/\1 = 36/' android/variables.gradle
+          echo "android.suppressUnsupportedCompileSdk=36" >> android/gradle.properties
+          # every build gets a higher version code (Play rejects repeats)
+          sed -i -E "s/versionCode [0-9]+/versionCode ${{ github.run_number }}/; s/versionName \"[^\"]*\"/versionName \"1.0.${{ github.run_number }}\"/" android/app/build.gradle
+          cat android/variables.gradle; grep -n "version" android/app/build.gradle
 
       - name: App icon and splash
         run: |
           mkdir -p assets && cp android-assets/${{ matrix.variant }}/* assets/
-          npx @capacitor/assets generate --android --iconBackgroundColor '#ff5a36' --splashBackgroundColor '#1b1d3a' || echo "Icon generation skipped"
+          npx @capacitor/assets generate --android --iconBackgroundColor '${{ matrix.variant == 'owner' && '#6A3DE8' || '#C8401D' }}' --splashBackgroundColor '${{ matrix.variant == 'owner' && '#2E1A8F' || '#16171D' }}' || echo "Icon generation skipped"
 
       - name: Build APK
         run: |
@@ -74,10 +83,30 @@ jobs:
           cd android && chmod +x gradlew && ./gradlew assembleDebug --no-daemon
           cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/LastPick-${{ matrix.variant }}.apk"
 
+      - name: Build signed Play Store bundle (AAB)
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then echo "No signing key in secrets: skipping the Play Store bundle"; exit 0; fi
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/upload.jks"
+          cd android && ./gradlew bundleRelease --no-daemon \
+            -Pandroid.injected.signing.store.file="$RUNNER_TEMP/upload.jks" \
+            -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
+            -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
+          cp app/build/outputs/bundle/release/app-release.aab "$GITHUB_WORKSPACE/LastPick-${{ matrix.variant }}.aab"
+          rm -f "$RUNNER_TEMP/upload.jks"
+
       - uses: actions/upload-artifact@v4
         with:
           name: LastPick-${{ matrix.variant }}
-          path: LastPick-${{ matrix.variant }}.apk
+          path: |
+            LastPick-${{ matrix.variant }}.apk
+            LastPick-${{ matrix.variant }}.aab
+          if-no-files-found: ignore
 
   release:
     needs: build
@@ -94,6 +123,6 @@ jobs:
         run: |
           ls -la apks
           gh release delete apk-latest --yes --cleanup-tag || true
-          gh release create apk-latest apks/LastPick-customer.apk apks/LastPick-owner.apk \
-            --prerelease --target "${{ github.sha }}" --title "Android test builds" \
-            --notes "LastPick-customer.apk = LastPick (customers). LastPick-owner.apk = LastPick Business (owners). Test builds: allow 'Install unknown apps' to install."
+          gh release create apk-latest apks/LastPick-customer.apk apks/LastPick-owner.apk $(ls apks/*.aab 2>/dev/null) \
+            --prerelease --target "${{ github.sha }}" --title "Android builds" \
+            --notes "LastPick-customer.apk / LastPick-owner.apk: test builds to install on a phone (allow 'Install unknown apps'). LastPick-customer.aab / LastPick-owner.aab: signed bundles to upload in Play Console (target API 36)."

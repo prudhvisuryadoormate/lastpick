@@ -1,10 +1,10 @@
 // Demo backend: same interface as firebase.js, data kept in this browser's localStorage.
 // Used automatically when VITE_FIREBASE_API_KEY is not set. No real payments happen here.
 import { compressPhoto } from "../lib/image.js";
-import { cityKey } from "../lib/config.js";
+import { CONSENT_VERSION, cityKey } from "../lib/config.js";
 import { distanceKm, indianPhone } from "../lib/format.js";
 
-const KEY = "lastpick-demo-v4";
+const KEY = "lastpick-demo-v5";
 const H = 3600000, D = 86400000;
 const rid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 const wait = (ms = 150) => new Promise((r) => setTimeout(r, ms));
@@ -26,7 +26,7 @@ function seed() {
     { id: "u-own", email: "owner@demo.in", password: "demo1234", name: "Suresh", phone: "9845011223", role: "user" },
     { id: "u-admin", email: "admin@demo.in", password: "demo1234", name: "Admin", phone: "9000000000", role: "admin" },
     { id: "u-mod", email: "moderator@demo.in", password: "demo1234", name: "Kavya (Hyderabad)", phone: "9000000001", role: "moderator", regions: ["Telangana"] },
-  ].map((u) => ({ ...u, phone: indianPhone(u.phone), createdAt: n - 10 * D }));
+  ].map((u) => ({ ...u, phone: indianPhone(u.phone), createdAt: n - 10 * D, consent: CONSENT_VERSION, partnerConsent: CONSENT_VERSION }));
   const biz = [
     ["u-own", "Sunrise Bakery", "food", "Indiranagar", 12.9784, 77.6408, "9845011223"],
     ["o2", "Hotel Grand Residency", "stay", "MG Road", 12.9756, 77.6066, "8041255667"],
@@ -40,7 +40,7 @@ function seed() {
     ["o11", "Hotel Sea Breeze", "stay", "Andheri East", 19.1136, 72.8697, "9820012345", "Mumbai", "Maharashtra"],
     ["o12", "Chennai Sweets", "food", "T. Nagar", 13.0418, 80.2341, "9840012345", "Chennai", "Tamil Nadu"],
   ].map(([owner, name, category, area, lat, lng, phone, city = "Bengaluru", state = "Karnataka"], i) => ({
-    id: "b" + (i + 1), ownerId: owner, name, category, about: "", address: `${area}, ${city}`, area, city, state, cityKey: cityKey(city), lat, lng,
+    id: "b" + (i + 1), ownerId: owner, name, category, categories: [category], about: "", address: `${area}, ${city}`, area, city, state, cityKey: cityKey(city), lat, lng,
     pincode: PINS[area] || "",
     status: "verified", statusNote: "", reportCount: 0, createdAt: n - 30 * D, phone: indianPhone(phone), whatsapp: true,
   }));
@@ -74,14 +74,19 @@ function seed() {
     { id: rid(), ownerId: "u-own", businessName: "Sunrise Bakery", title: "Diwali sweets box", category: "food", emoji: "🪔", origPrice: 900, price: 540, views: 410, leads: 23, status: "live", createdAt: n - 25 * D, endsAt: n - 20 * D },
     { id: rid(), ownerId: "u-own", businessName: "Sunrise Bakery", title: "Birthday cakes, 30% off", category: "food", emoji: "🎂", origPrice: 1200, price: 840, views: 176, leads: 9, status: "ended", createdAt: n - 14 * D, endsAt: n - 12 * D },
   ];
-  return { v: 4, config: { freeMode: true }, session: null, users, businesses: biz, subs, offers, leads, contacts: [], reports: [], photos: {}, archive };
+  const reviews = [
+    { id: "b1_x1", businessId: "b1", customerId: "x1", name: "Ravi", rating: 5, text: "Cakes were fresh and the owner kept them aside for me. Great deal.", offerTitle: offers[0].title, status: "published", createdAt: n - 3 * D, reply: { text: "Thank you Ravi, see you again!", at: n - 2 * D } },
+    { id: "b1_x2", businessId: "b1", customerId: "x2", name: "Ananya", rating: 4, text: "Good pastries. Came a bit late so fewer choices.", offerTitle: offers[0].title, status: "published", createdAt: n - 6 * D, reply: null },
+  ];
+  biz[0].rating = { avg: 4.5, count: 2 };
+  return { v: 5, config: { freeMode: true }, session: null, users, businesses: biz, subs, offers, leads, contacts: [], reports: [], photos: {}, archive, reviews, grievances: [], consentLog: [] };
 }
 
 function load() {
   let db;
   try { db = JSON.parse(localStorage.getItem(KEY) || "null"); } catch { db = null; }
   // reseed when empty or when every demo offer has expired
-  if (!db || db.v !== 4 || !db.offers.some((o) => o.status === "live" && o.endsAt > Date.now())) {
+  if (!db || db.v !== 5 || !db.offers.some((o) => o.status === "live" && o.endsAt > Date.now())) {
     const fresh = seed();
     if (db?.session) fresh.session = db.session;
     db = fresh;
@@ -95,7 +100,12 @@ function me(db) {
   if (!u) throw new Error("Please log in");
   return u;
 }
-const hasPlan = (db, userId, plan) => db.config?.freeMode !== false || db.subs.some((s) => s.userId === userId && s.plan === plan && ["active", "cancelled"].includes(s.status) && s.currentPeriodEnd > Date.now());
+function inTrial(db, userId, plan) {
+  if (plan === "customer") { const u = db.users.find((x) => x.id === userId); return !!u && (u.trialEndsAt || (u.createdAt || 0) + 30 * D) > Date.now(); }
+  const b = db.businesses.find((x) => x.ownerId === userId);
+  return !!b && b.status === "verified" && (b.trialEndsAt || b.createdAt + 30 * D) > Date.now();
+}
+const hasPlan = (db, userId, plan) => db.config?.freeMode !== false || inTrial(db, userId, plan) || db.subs.some((s) => s.userId === userId && s.plan === plan && ["active", "cancelled"].includes(s.status) && s.currentPeriodEnd > Date.now());
 const isAdmin = (db) => { const u = db.users.find((x) => x.id === db.session); return u?.role === "admin"; };
 function staff(db, superOnly = false) {
   const u = db.users.find((x) => x.id === db.session);
@@ -104,9 +114,14 @@ function staff(db, superOnly = false) {
   throw new Error(superOnly ? "Super admins only" : "Admins only");
 }
 const bizVisible = (db, b) => b && b.status === "verified" && hasPlan(db, b.ownerId, "owner");
-const pub = (b) => b && ({ id: b.id, name: b.name, category: b.category, about: b.about, area: b.area, city: b.city, state: b.state, cityKey: b.cityKey, pincode: b.pincode, address: b.address, lat: b.lat, lng: b.lng, status: b.status });
+const pub = (b) => b && ({ id: b.id, name: b.name, category: b.category, rating: b.rating?.count ? b.rating : null, about: b.about, area: b.area, city: b.city, state: b.state, cityKey: b.cityKey, pincode: b.pincode, address: b.address, lat: b.lat, lng: b.lng, status: b.status });
 const withBiz = (db, o) => ({ ...o, business: pub(db.businesses.find((b) => b.id === o.businessId)) });
 const emit = () => listeners.forEach((cb) => cb());
+function rerate(db, businessId) {
+  const b = db.businesses.find((x) => x.id === businessId); if (!b) return;
+  const rs = db.reviews.filter((r) => r.businessId === businessId && r.status === "published");
+  b.rating = { avg: rs.length ? Math.round((rs.reduce((n, r) => n + r.rating, 0) / rs.length) * 10) / 10 : 0, count: rs.length };
+}
 const subOut = (s) => s && ({ ...s, active: ["active", "cancelled"].includes(s.status) && s.currentPeriodEnd > Date.now() });
 
 export const api = {
@@ -125,17 +140,45 @@ export const api = {
     if (!u) throw new Error("Wrong email or password");
     db.session = u.id; save(db); emit();
   },
-  async signUp({ email, password, name, phone }) {
+  async signUp({ email, password, name, phone, consent }) {
     await wait();
     const db = load();
     if (db.users.some((x) => x.email.toLowerCase() === email.trim().toLowerCase())) throw new Error("An account with this email already exists");
-    const u = { id: "u-" + rid(), email: email.trim(), password, name, phone: indianPhone(phone) || phone, role: "user", createdAt: Date.now() };
+    const u = { id: "u-" + rid(), email: email.trim(), password, name, phone: indianPhone(phone) || phone, role: "user", createdAt: Date.now(), trialEndsAt: Date.now() + 30 * D, consent: consent ? CONSENT_VERSION : null };
+    if (consent) db.consentLog.push({ userId: u.id, kind: "user", version: CONSENT_VERSION, items: consent.items || [], at: Date.now() });
     db.users.push(u); db.session = u.id; save(db); emit();
     return { needsConfirmation: false };
   },
   async resetPassword() { await wait(); },
+  // ---------- one-time codes (demo: the code is always 123456) ----------
+  async sendPhoneOtp(phone) { await wait(300); const p = indianPhone(phone); if (!p) throw new Error("Please enter a valid Indian mobile number"); this._otp = { kind: "phone", value: p }; },
+  async sendEmailOtp(email) { await wait(300); if (!/^\S+@\S+\.\S+$/.test(email)) throw new Error("Please enter a valid e-mail address"); this._otp = { kind: "email", value: email.trim().toLowerCase() }; },
+  async verifyPhoneOtp(code) { return this._verifyOtp(code); },
+  async verifyEmailOtp(email, code) { return this._verifyOtp(code); },
+  async _verifyOtp(code) {
+    await wait(300);
+    if (!this._otp) throw new Error("Ask for a code first");
+    if (String(code) !== "123456") throw new Error("That code is not right. Check it and try again.");
+    const db = load(); const { kind, value } = this._otp;
+    let u = db.users.find((x) => (kind === "phone" ? x.phone === value : (x.email || "").toLowerCase() === value));
+    const isNew = !u;
+    if (!u) { u = { id: "u-" + rid(), email: kind === "email" ? value : "", phone: kind === "phone" ? value : "", role: "user", createdAt: Date.now(), needsProfile: true }; db.users.push(u); }
+    db.session = u.id; this._otp = null; save(db); emit();
+    return { isNew };
+  },
+  async completeProfile({ name, phone, email, consent }) {
+    await wait();
+    const db = load(); const u = me(db);
+    Object.assign(u, { name, phone: u.phone || indianPhone(phone) || phone, email: u.email || (email || "").trim(), needsProfile: false, trialEndsAt: Date.now() + 30 * D, consent: CONSENT_VERSION });
+    db.consentLog.push({ userId: u.id, kind: "user", version: CONSENT_VERSION, items: consent?.items || [], at: Date.now() });
+    save(db); emit();
+  },
   async signOut() { const db = load(); db.session = null; save(db); emit(); },
-  async getProfile() { const u = me(load()); return { id: u.id, name: u.name, phone: u.phone, email: u.email, role: u.role, regions: u.regions || [] }; },
+  async getProfile() {
+    const u = me(load());
+    if (u.needsProfile) return { id: u.id, needsProfile: true, name: "", phone: u.phone || "", email: u.email || "", role: "user", regions: [] };
+    return { trialEndsAt: u.trialEndsAt || (u.createdAt || Date.now()) + 30 * D, id: u.id, name: u.name, phone: u.phone, email: u.email, role: u.role, regions: u.regions || [], consentVersion: u.consent || null, partnerConsentVersion: u.partnerConsent || null };
+  },
   async updateProfile({ name, phone }) { const db = load(); const u = me(db); u.name = name; u.phone = indianPhone(phone) || phone; save(db); },
 
   async mySubscriptions() {
@@ -161,12 +204,12 @@ export const api = {
   async myBusiness() {
     const db = load(); const u = me(db);
     const b = db.businesses.find((x) => x.ownerId === u.id);
-    return b ? { ...b } : null;
+    return b ? { ...b, trialEndsAt: b.trialEndsAt || (b.status === "verified" ? b.createdAt + 30 * D : null) } : null;
   },
   async saveBusiness(b) {
     await wait();
     const db = load(); const u = me(db);
-    const fields = { name: b.name, category: b.category, about: b.about, address: b.address, area: b.area, city: b.city, state: b.state, cityKey: cityKey(b.city),
+    const fields = { name: b.name, category: b.category, categories: [...new Set([b.category, ...(b.categories || [])].filter(Boolean))].slice(0, 3), about: b.about, address: b.address, area: b.area, city: b.city, state: b.state, cityKey: cityKey(b.city),
       pincode: String(b.pincode || "").trim(),
       lat: b.lat, lng: b.lng, phone: indianPhone(b.phone) || b.phone, whatsapp: !!b.whatsapp };
     let x = db.businesses.find((y) => y.ownerId === u.id);
@@ -227,9 +270,13 @@ export const api = {
     const db = load(); const u = me(db);
     const b = db.businesses.find((x) => x.ownerId === u.id);
     if (!b) throw new Error("Set up your business first");
-    if (!hasPlan(db, u.id, "owner")) throw new Error("An active Owner Pro subscription is needed to post offers");
+    if (b.status !== "pending" && !hasPlan(db, u.id, "owner")) throw new Error("Your free month has ended. Pick a Business Pro plan to post offers.");
     if (!(o.price < o.origPrice)) throw new Error("Offer price must be lower than the normal price");
     if (!b.city || !b.state || !b.pincode) throw new Error("Add your city, state and pincode in Business profile first");
+    const dayStart = Math.floor((Date.now() + 5.5 * H) / D) * D - 5.5 * H;
+    if (db.offers.filter((x) => x.businessId === b.id && x.createdAt >= dayStart).length >= 3) throw new Error("You can post 3 offers a day. You can post again after midnight.");
+    const allowed = b.categories?.length ? b.categories : [b.category];
+    if (!allowed.includes(o.category)) throw new Error("Your business can post only in its registered categories. Add this category in Business profile first.");
     const id = rid();
     db.offers.push({ id, businessId: b.id, title: o.title, description: o.description, category: o.category, emoji: o.emoji, photoUrl: o.photoThumb || null,
       hasPhoto: !!o.photo, origPrice: o.origPrice, price: o.price, quantity: o.quantity, endsAt: o.endsAt, status: "live", views: 0, createdAt: Date.now(),
@@ -320,6 +367,8 @@ export const api = {
         pending: db.businesses.filter((b) => b.status === "pending").length, suspended: db.businesses.filter((b) => b.status === "suspended").length,
         customers: active("customer"), owners: active("owner"), leads30: db.leads.filter((l) => l.createdAt > now - 30 * D).length,
         openReports: db.reports.filter((r) => r.status === "open").length, archived: (db.archive || []).length,
+        openGrievances: s.role === "admin" ? db.grievances.filter((g) => ["open", "acknowledged"].includes(g.status)).length : null,
+        reviews: db.reviews.filter((r) => r.status === "published").length,
         liveOffers: cities.reduce((n, c) => n + c.liveOffers, 0),
       },
       cities,
@@ -353,7 +402,8 @@ export const api = {
       if ((b.reportCount || 0) >= 2) flags.push(`Reported ${b.reportCount}×`);
       if (db.businesses.filter((x) => x.phone === b.phone).length > 1) flags.push("Same phone as another business");
       if (Date.now() - b.createdAt < 2 * D) flags.push("New in last 48 h");
-      return { ...b, flags };
+      const sub = db.subs.find((x) => x.userId === b.ownerId && x.plan === "owner" && x.status === "active" && x.currentPeriodEnd > Date.now());
+      return { ...b, flags, trialEndsAt: b.trialEndsAt || (b.status === "verified" ? b.createdAt + 30 * D : null), planUntil: sub ? sub.currentPeriodEnd : null };
     });
   },
   async setBusinessStatus(id, status, note) {
@@ -361,19 +411,26 @@ export const api = {
     const b = db.businesses.find((x) => x.id === id);
     if (!b) throw new Error("Business not found");
     if (!s.canSee(b.state)) throw new Error("This business is outside your region");
-    b.status = status; b.statusNote = note || ""; save(db);
+    b.status = status; b.statusNote = note || "";
+    if (status === "verified" && !b.trialEndsAt) b.trialEndsAt = Date.now() + 30 * D;
+    save(db);
   },
   async adminReports() {
     const db = load(); const s = staff(db);
     return db.reports.filter((r) => r.status === "open" && s.canSee(r.state))
-      .map((r) => { const o = db.offers.find((x) => x.id === r.offerId); return { ...r, offer: o && withBiz(db, o) }; });
+      .map((r) => {
+        const o = r.offerId && db.offers.find((x) => x.id === r.offerId);
+        const rv = r.reviewId && db.reviews.find((x) => x.id === r.reviewId);
+        return { ...r, type: r.type || "offer", offer: o && withBiz(db, o), review: rv && { ...rv, businessName: db.businesses.find((b) => b.id === rv.businessId)?.name || "" } };
+      });
   },
   async resolveReport(id, status, removeOffer = false) {
     const db = load(); const s = staff(db);
     const r = db.reports.find((x) => x.id === id);
     if (!r) throw new Error("Report not found");
     if (!s.canSee(r.state)) throw new Error("This report is outside your region");
-    if (removeOffer) { const o = db.offers.find((x) => x.id === r.offerId); if (o) o.status = "removed"; }
+    if (removeOffer && r.offerId) { const o = db.offers.find((x) => x.id === r.offerId); if (o) o.status = "removed"; }
+    if (removeOffer && r.reviewId) { const rv = db.reviews.find((x) => x.id === r.reviewId); if (rv) { rv.status = "hidden"; rerate(db, rv.businessId); } }
     r.status = status; save(db);
   },
   async adminSetPlan(email, plan, months) {
@@ -386,4 +443,113 @@ export const api = {
     else { s.status = "expired"; s.currentPeriodEnd = Date.now(); }
     save(db);
   },
+
+  // ---------- reviews ----------
+  async listReviews(businessId) {
+    await wait(60);
+    return load().reviews.filter((r) => r.businessId === businessId && r.status === "published").sort((a, b) => b.createdAt - a.createdAt);
+  },
+  async myReview(businessId) { const db = load(); const u = me(db); return db.reviews.find((r) => r.businessId === businessId && r.customerId === u.id) || null; },
+  async ownerReviews() {
+    const db = load(); const u = me(db); const b = db.businesses.find((x) => x.ownerId === u.id);
+    return b ? db.reviews.filter((r) => r.businessId === b.id).sort((a, c) => c.createdAt - a.createdAt) : [];
+  },
+  async submitReview(businessId, rating, text) {
+    await wait();
+    const db = load(); const u = me(db);
+    const b = db.businesses.find((x) => x.id === businessId);
+    if (!b) throw new Error("Business not found");
+    if (b.ownerId === u.id) throw new Error("You can't review your own business");
+    if (!(rating >= 1 && rating <= 5)) throw new Error("Pick 1 to 5 stars");
+    if (/[6-9]\d{9}/.test(text.replace(/[\s().+-]/g, "")) || /https?:\/\/|www\.|\S+@\S+\.\S+/i.test(text)) throw new Error("Please don't include phone numbers, e-mails or links in a review");
+    const contacted = db.contacts.find((c) => c.customerId === u.id && db.offers.find((o) => o.id === c.offerId)?.businessId === businessId)
+      || db.leads.find((l) => l.customerId === u.id && l.businessId === businessId);
+    if (!contacted) throw new Error("You can review a business after you contact it through LastPick");
+    const id = `${businessId}_${u.id}`;
+    const prev = db.reviews.find((r) => r.id === id);
+    const offerTitle = db.offers.find((o) => o.id === contacted.offerId)?.title || "";
+    if (prev) Object.assign(prev, { rating, text: text.trim(), edited: true, updatedAt: Date.now() });
+    else db.reviews.unshift({ id, businessId, customerId: u.id, name: (u.name || "Customer").split(" ")[0], rating, text: text.trim(), offerTitle, status: "published", createdAt: Date.now(), reply: null });
+    rerate(db, businessId); save(db);
+    return { ok: true };
+  },
+  async replyReview(reviewId, text) {
+    const db = load(); const u = me(db);
+    const r = db.reviews.find((x) => x.id === reviewId);
+    const b = r && db.businesses.find((x) => x.id === r.businessId);
+    if (!b || b.ownerId !== u.id) throw new Error("Only the business owner can reply");
+    r.reply = text.trim() ? { text: text.trim(), at: Date.now() } : null; save(db);
+  },
+  async reportReview(reviewId, reason, details) {
+    await wait();
+    const db = load(); const u = me(db);
+    const r = db.reviews.find((x) => x.id === reviewId); if (!r) throw new Error("Review not found");
+    const b = db.businesses.find((x) => x.id === r.businessId);
+    db.reports.unshift({ id: rid(), type: "review", reviewId, businessId: r.businessId, reporterId: u.id, reason, details, status: "open", createdAt: Date.now(), state: b?.state || "", city: b?.city || "" });
+    save(db);
+  },
+
+  // ---------- privacy & complaints ----------
+  async recordConsent(kind) {
+    const db = load(); const u = me(db);
+    if (kind === "partner") u.partnerConsent = CONSENT_VERSION; else u.consent = CONSENT_VERSION;
+    db.consentLog.push({ userId: u.id, kind, version: CONSENT_VERSION, at: Date.now() }); save(db);
+  },
+  async exportMyData() {
+    await wait(300);
+    const db = load(); const u = me(db);
+    const b = db.businesses.find((x) => x.ownerId === u.id);
+    const { password, ...profile } = u; // eslint-disable-line no-unused-vars
+    return {
+      exportedAt: new Date().toISOString(), app: "LastPick (demo)", profile, business: b || null,
+      contacts: db.contacts.filter((c) => c.customerId === u.id), numbersShared: db.leads.filter((l) => l.customerId === u.id),
+      leadsReceived: b ? db.leads.filter((l) => l.businessId === b.id) : [], reviewsWritten: db.reviews.filter((r) => r.customerId === u.id),
+      grievances: db.grievances.filter((g) => g.userId === u.id), consents: db.consentLog.filter((c) => c.userId === u.id),
+    };
+  },
+  async deleteMyAccount() {
+    await wait(300);
+    const db = load(); const u = me(db);
+    if (["admin", "moderator"].includes(u.role)) throw new Error("Staff accounts must have their admin role removed by another admin before they can be deleted");
+    const b = db.businesses.find((x) => x.ownerId === u.id);
+    if (b) { db.offers = db.offers.filter((o) => o.businessId !== b.id); db.leads = db.leads.filter((l) => l.businessId !== b.id); db.reviews = db.reviews.filter((r) => r.businessId !== b.id); db.businesses = db.businesses.filter((x) => x !== b); }
+    db.contacts = db.contacts.filter((c) => c.customerId !== u.id); db.leads = db.leads.filter((l) => l.customerId !== u.id);
+    const touched = db.reviews.filter((r) => r.customerId === u.id).map((r) => r.businessId);
+    db.reviews = db.reviews.filter((r) => r.customerId !== u.id); touched.forEach((id) => rerate(db, id));
+    db.subs = db.subs.filter((x) => x.userId !== u.id); db.users = db.users.filter((x) => x !== u); db.session = null;
+    save(db); emit();
+  },
+  async submitGrievance(g) {
+    await wait();
+    const db = load(); const u = me(db);
+    if ((g.subject || "").trim().length < 3 || (g.details || "").trim().length < 10) throw new Error("Please add a subject and some details");
+    const ticket = "LP" + Date.now().toString(36).toUpperCase().slice(-6) + Math.floor(10 + Math.random() * 89);
+    db.grievances.unshift({ ticket, userId: u.id, email: u.email, type: g.type, subject: g.subject.trim(), details: g.details.trim(), status: "open", reply: "", createdAt: Date.now(), updatedAt: Date.now() });
+    save(db);
+    return { ticket };
+  },
+  async myGrievances() { const db = load(); const u = me(db); return db.grievances.filter((g) => g.userId === u.id); },
+  async adminBusinessPlan(businessId, action, { months, days } = {}) {
+    await wait();
+    const db = load(); staff(db, true);
+    const b = db.businesses.find((x) => x.id === businessId); if (!b) throw new Error("Business not found");
+    let s = db.subs.find((x) => x.userId === b.ownerId && x.plan === "owner");
+    const now = Date.now();
+    if (action === "unlock") {
+      if (!s) { s = { userId: b.ownerId, plan: "owner", provider: "manual" }; db.subs.push(s); }
+      const base = s.status === "active" && s.currentPeriodEnd > now ? s.currentPeriodEnd : now;
+      s.status = "active"; s.currentPeriodEnd = base + months * 30 * D;
+    } else if (action === "extendTrial") {
+      const cur = b.trialEndsAt || (b.status === "verified" ? b.createdAt + 30 * D : 0);
+      b.trialEndsAt = Math.max(now, cur) + days * D;
+    } else if (action === "end") { if (s) { s.status = "expired"; s.currentPeriodEnd = now; } b.trialEndsAt = now; }
+    save(db);
+  },
+  async adminGrievances(status = "open") { const db = load(); staff(db, true); return db.grievances.filter((g) => g.status === status).map((g) => ({ ...g, id: g.ticket })); },
+  async adminUpdateGrievance(ticket, status, reply) {
+    const db = load(); staff(db, true);
+    const g = db.grievances.find((x) => x.ticket === ticket); if (!g) throw new Error("Ticket not found");
+    Object.assign(g, { status, reply: reply || "", updatedAt: Date.now() }); save(db);
+  },
+  async logClientError(e) { console.warn("[client error]", e?.message); },
 };

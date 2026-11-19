@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/index.js";
 import { Empty, NeedLogin, OfferCard, PlanCard, Sheet, Spinner, Toggle } from "../components.jsx";
-import { APP_NAME, CATEGORIES, DURATIONS, EMOJIS, INDIAN_STATES, IS_OWNER_APP, MAJOR_CITIES, PLANS, RETENTION, TEMPLATES, TINTS } from "../lib/config.js";
-import { ago, day, errText, prettyPhone, rupee, telLink, timeLeft, validPhone, waLink } from "../lib/format.js";
+import { APP_NAME, CATEGORIES, CONSENT_VERSION, DURATIONS, EMOJIS, INDIAN_STATES, IS_OWNER_APP, MAJOR_CITIES, MAX_CATEGORIES, PLANS, POSTS_PER_DAY, RETENTION, TEMPLATES, TINTS, categoryOf } from "../lib/config.js";
+import { RatingBadge } from "./reviews.jsx";
+import { ago, day, daysLeft, errText, prettyPhone, rupee, telLink, timeLeft, validPhone, waLink } from "../lib/format.js";
 import { navigate, useApp, useNow } from "../state.jsx";
 import { validPincode } from "../lib/geo.js";
 
@@ -22,11 +23,11 @@ function OwnerPaywall() {
   const { business } = useApp();
   return (
     <>
-      <div className="page-h owner-row"><div className="avatar">{business.name[0]}</div><div><h1 className="title" style={{ fontSize: 20 }}>{business.name}</h1><div className="muted">Owner account · {business.area}</div></div></div>
-      <div className="status no"><span style={{ fontSize: 24 }}>🔒</span><div><b>Subscribe to post offers</b><div className="muted small">Your offers go live to every customer near you.</div></div></div>
+      <div className="page-h owner-row"><div className="avatar">{business.name[0]}</div><div><h1 className="title" style={{ fontSize: 20 }}>{business.name}</h1><div className="muted">Business account · {business.area}</div></div></div>
+      <div className="status no"><span style={{ fontSize: 24 }}>⏰</span><div><b>Your free month has ended</b><div className="muted small">Pick a plan to keep your offers live for customers within 30 km.</div></div></div>
       <PlanCard plan="owner" />
       <div className="pad">
-        <a className="btn main" href="#/subscribe/owner">Subscribe · {rupee(PLANS.owner.price)}/month</a>
+        <a className="btn main" href="#/plans">See plans · from {rupee(Math.round(PLANS.owner.options[3].price / 12))}/month</a>
         <div className="note">Turn empty rooms, seats, halls, slots and leftover stock into sales instead of losses.</div>
       </div>
     </>
@@ -46,7 +47,7 @@ function StatusBanner() {
 
 // ------------------------------------------------------------------ Dashboard
 export function OwnerDashboard() {
-  const { business, subs, setMode, freeMode } = useApp();
+  const { business, subs, setMode, freeMode, trial } = useApp();
   const [offers, setOffers] = useState(null);
   const [leads, setLeads] = useState(null);
   const now = useNow(30000);
@@ -58,26 +59,54 @@ export function OwnerDashboard() {
   const newLeads = (leads || []).filter((l) => l.status === "new");
   const views = (offers || []).reduce((s, o) => s + (o.views || 0), 0);
 
+  const week = (leads || []).filter((l) => l.createdAt > now - 7 * 86400000);
+  const perDay = [6, 5, 4, 3, 2, 1, 0].map((d) => week.filter((l) => Math.floor((now - l.createdAt) / 86400000) === d).length);
+  const maxDay = Math.max(1, ...perDay);
+  const left = daysLeft(trial?.owner);
+  const hour = new Date().getHours();
+
   return (
     <>
-      <div className="page-h row">
-        <div><div className="muted">Owner dashboard</div><h1 className="title">{business.name}</h1></div>
-        <a className="pill p-ok" href="#/owner/business">{business.status === "verified" ? "✔ Verified" : "Profile"}</a>
+      <div className="bizhero">
+        <div className="row">
+          <div className="owner-row">
+            <div className="avatar">{business.name[0]}</div>
+            <div><div className="small" style={{ color: "var(--hero-muted)", fontWeight: 600 }}>{hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening"}</div>
+              <div style={{ fontWeight: 800, fontSize: 18 }}>{business.name}</div></div>
+          </div>
+          <a className="pill" style={{ background: "rgba(255,255,255,.16)", color: "#fff" }} href="#/owner/business">{business.status === "verified" ? "✔ Verified" : business.status === "pending" ? "⏳ In review" : "Profile"}</a>
+        </div>
+        <div className="row" style={{ alignItems: "flex-end", marginTop: 22 }}>
+          <div>
+            <div className="small" style={{ color: "var(--hero-muted)", fontWeight: 600 }}>Customers interested this week</div>
+            <div className="gap" style={{ alignItems: "baseline", marginTop: 4 }}><span className="big">{leads ? week.length : "…"}</span>
+              <span className="pill" style={{ background: "var(--hi)", color: "var(--hi-ink)" }}>{monthLeads} in 30 days</span></div>
+          </div>
+          <div className="bars" aria-hidden="true">{perDay.map((n, k) => <span key={k} style={{ height: 8 + (n / maxDay) * 56, animationDelay: `${0.1 + k * 0.07}s` }} />)}</div>
+        </div>
+      </div>
+      <div className="kpis three lift">
+        <div className="kpi"><div className="n">{offers ? live.length : "…"}</div><div className="l">Live offers</div></div>
+        <div className="kpi"><div className="n">{views}</div><div className="l">Views</div></div>
+        <div className="kpi"><div className="n">{business.rating?.count ? <>{Number(business.rating.avg).toFixed(1)}<span style={{ color: "#E0A800" }}>★</span></> : "–"}</div><div className="l">{business.rating?.count ? `${business.rating.count} reviews` : "No reviews yet"}</div></div>
       </div>
       <StatusBanner />
-      <div className="plan" style={{ padding: 16, marginTop: 12 }}>
-        <div style={{ opacity: .75, fontSize: 13 }}>Interested customers, last 30 days</div>
-        <div className="amt" style={{ fontSize: 34 }}>{leads ? monthLeads : "…"}</div>
-        <div style={{ opacity: .75, fontSize: 12.5 }}>{views} views on your offers · {freeMode || !subs.owner ? "Free during launch" : `Owner Pro ${subs.owner.status === "cancelled" ? "ends" : "renews"} ${day(subs.owner.currentPeriodEnd)}`}</div>
-      </div>
-      <div className="kpis">
-        <div className="kpi"><div className="n">{offers ? live.length : "…"}</div><div className="l">Live offers</div></div>
-        <div className="kpi"><div className="n">{leads ? newLeads.length : "…"}</div><div className="l">New leads to call</div></div>
-      </div>
-      <div className="pad gap">
-        <a className="btn main" href="#/owner/post">＋ Post an offer</a>
-        <a className="btn dark" href="#/owner/leads">📇 Leads</a>
-      </div>
+      <a className="cta" href="#/owner/post"><span className="plus" aria-hidden="true">＋</span>
+        <span className="grow"><b style={{ display: "block", fontSize: 16 }}>Post an offer</b><span className="small" style={{ color: "#CFC8E8" }}>Goes live to customers within 30 km</span></span><span aria-hidden="true">›</span></a>
+      <a className="banner" style={{ background: "var(--warn-soft)", color: "var(--warn)" }} href="#/plans">🎁 <span>{subs.owner?.active ? `${PLANS.owner.name} active till ${day(subs.owner.currentPeriodEnd)}`
+        : left > 0 ? `Free month: ${left} day${left > 1 ? "s" : ""} left. Then ${rupee(PLANS.owner.price)}/month, or less on longer plans.`
+          : business.status !== "verified" ? `Your free month starts the day we verify you. Then ${rupee(PLANS.owner.price)}/month.`
+            : freeMode ? "Free during launch. We'll tell you before paid plans start." : `Your free month has ended. Plans from ${rupee(Math.round(PLANS.owner.options[3].price / 12))}/month.`}</span></a>
+      {live.length > 0 && <>
+        <div className="sect"><h3>Live now</h3><a className="link small" href="#/owner/offers">All offers</a></div>
+        {live.slice(0, 3).map((o) => (
+          <a className="item" key={o.id} href={"#/offer/" + o.id}>
+            <div className="ic" style={o.photoUrl ? { backgroundImage: `url("${o.photoUrl}")` } : { background: TINTS[o.category] || TINTS.other }}>{!o.photoUrl && o.emoji}</div>
+            <div className="grow"><b className="ellipsis" style={{ display: "block", fontSize: 14 }}>{o.title}</b><div className="muted small">{o.views} views · ends in {timeLeft(o.endsAt - now)}</div></div>
+            <span className={"tm " + (o.endsAt - now < 3600000 ? "hot" : "")}>{timeLeft(o.endsAt - now)}</span>
+          </a>))}
+      </>}
+      <a className="menu-item" style={{ marginTop: 10 }} href="#/owner/reviews">⭐ Reviews {business.rating?.count ? <RatingBadge rating={business.rating} /> : <span className="muted small">none yet</span>}<span className="chev">›</span></a>
       <div className="sect"><h3>Latest interested customers</h3><a className="link small" href="#/owner/leads">See all</a></div>
       {!leads ? <Spinner /> : leads.length === 0
         ? <div className="muted pad" style={{ paddingTop: 0 }}>When a customer taps "Share my number" on your offer, they appear here.</div>
@@ -187,13 +216,21 @@ export function OwnerOffers() {
 // ------------------------------------------------------------------ Post an offer
 export function PostOffer() {
   const { business, toast } = useApp();
-  const [f, setF] = useState({ category: business?.category || "other", emoji: "📦", title: "", description: "", origPrice: "", price: "", quantity: "", hours: 6 });
+  const allowed = business?.categories?.length ? business.categories : [business?.category || "other"];
+  const [postedToday, setPostedToday] = useState(null);
+  useEffect(() => {
+    const dayStart = Math.floor((Date.now() + 5.5 * 3600000) / 86400000) * 86400000 - 5.5 * 3600000;
+    api.myOffers().then((l) => setPostedToday(l.filter((o) => o.createdAt >= dayStart).length)).catch(() => setPostedToday(0));
+  }, []);
+  const postsLeft = postedToday == null ? POSTS_PER_DAY : Math.max(0, POSTS_PER_DAY - postedToday);
+  const [f, setF] = useState({ category: allowed[0], emoji: "📦", title: "", description: "", origPrice: "", price: "", quantity: "", hours: 6 });
   const [photo, setPhoto] = useState(null); // { file, url } (compressed when posting)
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const fileRef = useRef();
   const now = useNow(60000);
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  const templates = TEMPLATES.filter((t) => allowed.includes(t.category));
   const useTemplate = (t) => setF((p) => ({ ...p, category: t.category, emoji: t.emoji, title: t.title, origPrice: t.origPrice, price: t.price, quantity: t.quantity, hours: t.hours }));
 
   const orig = Number(f.origPrice), price = Number(f.price);
@@ -236,7 +273,7 @@ export function PostOffer() {
       <div className="page-h"><h1 className="title">Post an offer</h1><div className="muted">Anything you need to move before it becomes a loss</div></div>
       <StatusBanner />
       {(!business.state || !business.city || !business.pincode || business.lat == null) && <a className="banner warn" href="#/owner/business">📍 Add your pincode and shop location in Business profile before posting. Customers see offers near them.</a>}
-      <div className="chips">{TEMPLATES.map((t) => <button key={t.label} className="chip" onClick={() => useTemplate(t)}>{t.emoji} {t.label}</button>)}</div>
+      <div className="chips">{templates.map((t) => <button key={t.label} className="chip" onClick={() => useTemplate(t)}>{t.emoji} {t.label}</button>)}</div>
       <div className="form">
         <div className="fld"><label>Photo (optional)</label>
           {photo
@@ -246,7 +283,8 @@ export function PostOffer() {
         </div>
         {!photo && <div className="fld"><label>Or pick an icon</label><div className="emoji-pick">{EMOJIS.map((e) => <button key={e} className={f.emoji === e ? "on" : ""} onClick={() => set("emoji", e)}>{e}</button>)}</div></div>}
         <div className="fld"><label>Category</label>
-          <select value={f.category} onChange={(e) => set("category", e.target.value)}>{CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}</select></div>
+          <select value={f.category} onChange={(e) => set("category", e.target.value)}>{allowed.map((id) => { const c = categoryOf(id); return <option key={id} value={id}>{c.icon} {c.label}</option>; })}</select>
+          <span className="hint">Your business posts in: {allowed.map((id) => categoryOf(id).label).join(", ")}. <a className="link" href="#/owner/business">Change categories</a></span></div>
         <div className="fld"><label>What are you offering?</label><input maxLength={120} value={f.title} onChange={(e) => set("title", e.target.value)} placeholder="e.g. Marriage hall free on 24 Nov" /></div>
         <div className="fld"><label>Details</label><textarea rows="3" maxLength={1000} value={f.description} onChange={(e) => set("description", e.target.value)} placeholder="What's included, timings, conditions…" /></div>
         <div className="two">
@@ -266,7 +304,10 @@ export function PostOffer() {
       <div style={{ paddingTop: 8 }}><OfferCard offer={preview} preview /></div>
       <div className="pad" style={{ paddingTop: 0 }}>
         {err && <div className="error" style={{ marginBottom: 10 }}>{err}</div>}
-        <button className="btn main" disabled={busy || problems.length > 0} onClick={submit}>{busy ? "Posting…" : "🚀 Make offer live"}</button>
+        <div className={"banner " + (postsLeft > 0 ? "ok" : "warn")} style={{ margin: "0 0 12px" }}>{postsLeft > 0
+          ? `📅 You can post ${postsLeft} more offer${postsLeft > 1 ? "s" : ""} today (${POSTS_PER_DAY} a day).`
+          : `📅 You've posted ${POSTS_PER_DAY} offers today. You can post again after midnight.`}</div>
+        <button className="btn main" disabled={busy || problems.length > 0 || postsLeft === 0} onClick={submit}>{busy ? "Posting…" : "🚀 Make offer live"}</button>
         {problems.length > 0 && <div className="note">Add {problems.join(", ")}.</div>}
         <div className="note">By posting, you confirm this offer is genuine and you will honour it. You are responsible for your offer; {APP_NAME} only connects you with customers.</div>
       </div>
@@ -281,11 +322,14 @@ export function BusinessPage() {
 
 function BusinessForm({ first = false }) {
   const { business, profile, refresh, toast } = useApp();
+  const needsConsent = profile?.partnerConsentVersion !== CONSENT_VERSION;
   const [f, setF] = useState(() => ({
+    extra: (business?.categories || []).filter((c) => c !== business?.category),
     name: business?.name || "", category: business?.category || "food", about: business?.about || "", address: business?.address || "",
     area: business?.area || "", city: business?.city || "", state: business?.state || "", pincode: business?.pincode || "", lat: business?.lat ?? null, lng: business?.lng ?? null,
-    phone: business?.phone || profile?.phone || "", whatsapp: business?.whatsapp ?? true, agree: !first,
+    phone: business?.phone || profile?.phone || "", whatsapp: business?.whatsapp ?? true, agree: false,
   }));
+  const toggleExtra = (id) => setF((p) => ({ ...p, extra: p.extra.includes(id) ? p.extra.filter((x) => x !== id) : p.extra.length < MAX_CATEGORIES - 1 ? [...p.extra, id] : p.extra }));
   const [busy, setBusy] = useState(false);
   const [locating, setLocating] = useState(false);
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
@@ -308,14 +352,16 @@ function BusinessForm({ first = false }) {
   if (!validPincode(f.pincode)) missing.push("a 6-digit pincode");
   if (f.lat == null) missing.push("your shop's map location (tap Use my location at your shop)");
   if (!validPhone(f.phone)) missing.push("a valid Indian contact number");
-  if (!f.agree) missing.push("agreement to the owner terms");
+  if (needsConsent && !f.agree) missing.push("agreement to the business terms");
 
   const save = async () => {
     if (missing.length) return;
     setBusy(true);
     try {
       const city = f.city.trim().replace(/\s+/g, " ").replace(/\b\w/g, (ch) => ch.toUpperCase());
-      await api.saveBusiness({ ...business, ...f, name: f.name.trim(), area: f.area.trim(), city, phone: f.phone.trim() });
+      const categories = [f.category, ...f.extra.filter((c) => c !== f.category)].slice(0, MAX_CATEGORIES);
+      await api.saveBusiness({ ...business, ...f, categories, name: f.name.trim(), area: f.area.trim(), city, phone: f.phone.trim() });
+      if (needsConsent) await api.recordConsent("partner", { items: ["genuine-offers", "categories", "licences", "number-visible", "customer-data-use"] });
       await refresh();
       toast(first ? "Business created. Next: choose your plan." : "Business details saved");
       if (!first) navigate("/owner");
@@ -331,9 +377,14 @@ function BusinessForm({ first = false }) {
       <div className="form" style={{ paddingTop: 12 }}>
         <div className="fld"><label>Business name</label><input maxLength={120} value={f.name} onChange={(e) => set("name", e.target.value)} placeholder="e.g. Sunrise Bakery" /></div>
         <div className="fld"><label>Main category</label>
-          <select value={f.category} onChange={(e) => set("category", e.target.value)}>{CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}</select></div>
+          <select value={f.category} onChange={(e) => setF((p) => ({ ...p, category: e.target.value, extra: p.extra.filter((x) => x !== e.target.value) }))}>{CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}</select>
+          <span className="hint">You can post offers only in your categories. Food registered? Then you post food offers.</span></div>
+        <div className="fld"><label>Also offer (optional, up to {MAX_CATEGORIES - 1})</label>
+          <div className="gap" style={{ flexWrap: "wrap", gap: 6 }}>{CATEGORIES.filter((c) => c.id !== f.category).map((c) => (
+            <button type="button" key={c.id} className={"chip " + (f.extra.includes(c.id) ? "on" : "")} onClick={() => toggleExtra(c.id)}
+              disabled={!f.extra.includes(c.id) && f.extra.length >= MAX_CATEGORIES - 1}>{c.icon} {c.label}</button>))}</div></div>
         <div className="fld"><label>Contact number for customers</label><input inputMode="tel" value={f.phone} onChange={(e) => set("phone", e.target.value)} placeholder="10-digit Indian mobile or landline with STD code" />
-          <span className="hint">Only customers with the Customer Pass can see this number.</span></div>
+          <span className="hint">Shown to logged-in customers on your offers.</span></div>
         <Toggle on={f.whatsapp} onChange={(v) => set("whatsapp", v)} title="Customers can WhatsApp this number" />
         <div className="fld"><label>Address</label><input value={f.address} onChange={(e) => set("address", e.target.value)} placeholder="Shop number, street" /></div>
         <div className="two">
@@ -352,10 +403,11 @@ function BusinessForm({ first = false }) {
           <button className="btn ghost sm" type="button" disabled={locating} onClick={locate}>{locating ? "Locating…" : "📍 Use my location"}</button>
         </div>
         <div className="fld"><label>About (optional)</label><textarea rows="2" maxLength={500} value={f.about} onChange={(e) => set("about", e.target.value)} placeholder="What you do, opening hours…" /></div>
-        {first && (
-          <label className="toggle" style={{ cursor: "pointer", justifyContent: "flex-start" }}>
-            <input type="checkbox" checked={f.agree} onChange={(e) => set("agree", e.target.checked)} style={{ width: 20, height: 20 }} />
-            <span className="small">I confirm my offers will be genuine and I'll honour them. I'm responsible for my offers; {APP_NAME} only connects me with customers. <a className="link" href="#/terms">Owner terms</a></span>
+        {needsConsent && (
+          <label className="toggle" style={{ cursor: "pointer", justifyContent: "flex-start", alignItems: "flex-start" }}>
+            <input type="checkbox" aria-label="I agree to the business terms" checked={f.agree} onChange={(e) => set("agree", e.target.checked)} style={{ width: 20, height: 20, flex: "none" }} />
+            <span className="small">I confirm these details are true and I'm allowed to run this business. My offers will be genuine, at real prices, in my categories only, and I hold the licences my business needs (e.g. FSSAI for food).
+              I agree my business contact number is shown to logged-in customers, and I'll use customers' numbers only to reply about their offer. I'm responsible for my offers; {APP_NAME} only connects me with customers. <a className="link" href="#/terms">Business terms</a></span>
           </label>
         )}
         <button className="btn main" disabled={busy || missing.length > 0} onClick={save}>{busy ? "Saving…" : first ? "Create business" : "Save details"}</button>

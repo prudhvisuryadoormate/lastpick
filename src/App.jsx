@@ -3,12 +3,29 @@ import { api, isLive } from "./api/index.js";
 import { Empty, Spinner } from "./components.jsx";
 import { Account, Contacts, Home, MapPage, OfferPage } from "./pages/customer.jsx";
 import { BusinessPage, OwnerDashboard, OwnerGate, OwnerLeads, OwnerOffers, PostOffer } from "./pages/owner.jsx";
-import { Admin, Contact, Help, Login, Privacy, Refund, Subscribe, Terms } from "./pages/account.jsx";
+import { Admin, Help, Login, Plans, Refund, Subscribe } from "./pages/account.jsx";
+import { CompleteProfile, Welcome, welcomed } from "./pages/auth.jsx";
+import { ConsentGate, Contact, DeleteAccountInfo, Grievance, Privacy, PrivacyCenter, Terms } from "./pages/privacy.jsx";
+import { OwnerReviews } from "./pages/reviews.jsx";
+import { CONSENT_VERSION } from "./lib/config.js";
 import { match, navigate, useApp, useRoute } from "./state.jsx";
 import { IS_OWNER_APP } from "./lib/config.js";
 
-const CUSTOMER_NAV = [["/", "🏠", "Offers"], ["/map", "🗺️", "Map"], ["/contacts", "📇", "Contacts"], ["/account", "👤", "Account"]];
-const OWNER_NAV = [["/owner", "📊", "Dashboard"], ["/owner/post", "➕", "Post"], ["/owner/leads", "📇", "Leads"], ["/owner/offers", "🗂️", "My offers"], ["/account", "👤", "Account"]];
+const I = {
+  offers: "M20.6 13.4l-7.2 7.2a2 2 0 0 1-2.8 0L3 13V3h10l7.6 7.6a2 2 0 0 1 0 2.8zM7.5 7.5h.01",
+  map: "M9 4L3 6v14l6-2 6 2 6-2V4l-6 2zM9 4v14M15 6v14",
+  contacts: "M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2",
+  account: "M20 21a8 8 0 0 0-16 0M12 13a4 4 0 1 0 0-8 4 4 0 0 0 0 8z",
+  home: "M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z",
+  post: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 8v8M8 12h8",
+  leads: "M16 21v-2a4 4 0 0 0-8 0v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z",
+  myoffers: "M4 4h16v16H4zM4 10h16M10 4v16",
+};
+const Icon = ({ d }) => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>;
+const CUSTOMER_NAV = [["/", I.offers, "Offers"], ["/map", I.map, "Map"], ["/contacts", I.contacts, "Contacts"], ["/account", I.account, "Account"]];
+const OWNER_NAV = [["/owner", I.home, "Home"], ["/owner/post", I.post, "Post"], ["/owner/leads", I.leads, "Leads"], ["/owner/offers", I.myoffers, "Offers"], ["/account", I.account, "Account"]];
+// pages anyone can open without accepting the privacy notice first
+const OPEN_PAGES = ["/privacy", "/terms", "/contact", "/help", "/refund", "/grievance", "/delete-account", "/account/privacy", "/login", "/plans"];
 
 function Page({ path, query }) {
   let m;
@@ -18,12 +35,18 @@ function Page({ path, query }) {
   if (path === "/contacts") return <Contacts />;
   if (path === "/account") return <Account />;
   if ((m = match("/subscribe/:plan", path))) return <Subscribe plan={m.plan} />;
+  if (path === "/plans") return <Plans plan={query.plan} />;
+  if (path === "/welcome") return <Welcome />;
   if (path === "/login") return <Login next={query.next} />;
   if (path === "/owner") return <OwnerGate><OwnerDashboard /></OwnerGate>;
   if (path === "/owner/post") return <OwnerGate><PostOffer /></OwnerGate>;
   if (path === "/owner/leads") return <OwnerGate><OwnerLeads /></OwnerGate>;
   if (path === "/owner/offers") return <OwnerGate allowWithoutPlan><OwnerOffers /></OwnerGate>;
   if (path === "/owner/business") return <BusinessPage />;
+  if (path === "/owner/reviews") return <OwnerGate allowWithoutPlan><OwnerReviews /></OwnerGate>;
+  if (path === "/account/privacy") return <PrivacyCenter />;
+  if (path === "/delete-account") return <DeleteAccountInfo />;
+  if (path === "/grievance") return <Grievance />;
   if (path === "/admin") return <Admin />;
   if (path === "/terms") return <Terms />;
   if (path === "/privacy") return <Privacy />;
@@ -46,9 +69,18 @@ function NewLeadsDot() {
   return n > 0 ? <span className="dot">{n}</span> : null;
 }
 
+function LoadError() {
+  const { refresh } = useApp();
+  return <Empty icon="📶" title="Couldn't load your account" action={<div className="gap" style={{ justifyContent: "center" }}><button className="btn main sm" onClick={refresh}>Try again</button>
+    <button className="btn ghost sm" onClick={async () => { await api.signOut(); navigate("/login"); }}>Log out</button></div>}>Check your internet connection and try again.</Empty>;
+}
+
 export default function App() {
   const { path, query } = useRoute();
-  const { loading, mode, setMode } = useApp();
+  const { loading, mode, setMode, session, profile } = useApp();
+  const needsProfile = !!session && !!profile?.needsProfile && !OPEN_PAGES.filter((p) => p !== "/login").includes(path);
+  const needsConsent = !!session && !!profile && !profile.needsProfile && !profile.loadError && profile.consentVersion !== CONSENT_VERSION && !OPEN_PAGES.includes(path);
+  const firstVisit = !loading && !session && !IS_OWNER_APP && path === "/" && !welcomed();
   const ownerArea = path.startsWith("/owner");
 
   // the Business app always opens on the owner dashboard
@@ -61,18 +93,20 @@ export default function App() {
     if (["/", "/map", "/contacts"].includes(path) && mode !== "customer") setMode("customer");
   }, [path]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const nav = IS_OWNER_APP || ownerArea || (mode === "owner" && path === "/account") ? OWNER_NAV : CUSTOMER_NAV;
-  const showNav = path !== "/login";
+  const biz = IS_OWNER_APP || ownerArea || (mode === "owner" && ["/account", "/plans"].includes(path));
+  const nav = biz ? OWNER_NAV : CUSTOMER_NAV;
+  const fullScreen = path === "/login" || path === "/welcome" || firstVisit || needsProfile;
+  const showNav = !fullScreen;
 
   return (
-    <div className="shell">
+    <div className={"shell" + (biz ? " biz" : "")}>
       {!isLive && <div className="demo-bar">Demo mode · data stays in this browser · no real payments</div>}
-      <main className="main">{loading ? <Spinner /> : <Page path={path} query={query} />}</main>
-      {showNav && (
+      <main className="main" style={fullScreen ? { paddingBottom: 0 } : null}>{loading ? <Spinner /> : profile?.loadError && !OPEN_PAGES.includes(path) ? <LoadError /> : firstVisit ? <Welcome /> : needsProfile ? <CompleteProfile /> : needsConsent ? <ConsentGate /> : <Page path={path} query={query} />}</main>
+      {showNav && !needsConsent && (
         <nav className="nav" aria-label="Main">
           {nav.map(([to, icon, label]) => (
             <a key={to} href={"#" + to} className={path === to ? "on" : ""} aria-current={path === to ? "page" : undefined}>
-              <span className="i">{icon}</span>{label}
+              <Icon d={icon} />{label}
               {to === "/owner/leads" && <NewLeadsDot />}
             </a>
           ))}

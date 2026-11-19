@@ -75,11 +75,18 @@ export function AppProvider({ children }) {
     try {
       const session = await api.getSession();
       if (!session) { setState({ loading: false, session: null, profile: null, subs: { customer: null, owner: null }, business: null }); return; }
-      const [profile, subs, business] = await Promise.all([api.getProfile(), api.mySubscriptions(), api.myBusiness()]);
+      // the profile is required; plans and business are optional, so a problem there never blocks logging in
+      const [profile, subs, business] = await Promise.all([
+        api.getProfile(),
+        api.mySubscriptions().catch((e) => { console.warn("plans", e); return { customer: null, owner: null }; }),
+        api.myBusiness().catch((e) => { console.warn("business", e); return null; }),
+      ]);
       setState({ loading: false, session, profile, subs, business });
     } catch (e) {
       console.error(e);
-      setState((s) => ({ ...s, loading: false }));
+      // logged in but the profile couldn't load (e.g. offline): keep the session so the app doesn't bounce back to Log in
+      const session = await api.getSession().catch(() => null);
+      setState((s) => ({ ...s, loading: false, session, profile: session ? (s.profile || { id: session.user.id, loadError: true, name: "", phone: "", email: session.user.email || "", role: "user", regions: [] }) : null }));
     }
   }, []);
 
@@ -106,9 +113,10 @@ export function AppProvider({ children }) {
   const value = {
     ...state, refresh, mode, setMode, location, locationStatus, city, setCity, area, setArea, toast: setToastMsg,
     config, setConfig, freeMode: config.freeMode,
-    // during free launch every logged-in user can contact owners and post offers
-    isCustomer: config.freeMode ? !!state.session : !!state.subs.customer?.active,
-    isOwner: config.freeMode ? !!state.session : !!state.subs.owner?.active,
+    // free month: customers from sign-up, businesses from verification. During free launch everyone logged in has access.
+    trial: { customer: state.profile?.trialEndsAt || null, owner: state.business?.trialEndsAt || null },
+    isCustomer: !!state.session && (config.freeMode || !!state.subs.customer?.active || (state.profile?.trialEndsAt || 0) > Date.now()),
+    isOwner: !!state.session && (config.freeMode || !!state.subs.owner?.active || state.business?.status === "pending" || (state.business?.trialEndsAt || 0) > Date.now()),
     isAdmin: state.profile?.role === "admin", // super admin: all of India
     isStaff: ["admin", "moderator"].includes(state.profile?.role), // admin or city/state moderator
   };
