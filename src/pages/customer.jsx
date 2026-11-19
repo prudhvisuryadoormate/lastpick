@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/index.js";
 import { BackButton, CategoryChips, Countdown, Disclaimer, Empty, MapView, NeedLogin, OfferCard, OfferImage, Sheet, Spinner, catLabel } from "../components.jsx";
-import { APP_NAME, CATEGORIES, PLANS, REPORT_REASONS, TINTS } from "../lib/config.js";
+import { APP_NAME, CATEGORIES, IS_CUSTOMER_APP, IS_OWNER_APP, PLANS, REPORT_REASONS, TINTS, WEBSITE_URL } from "../lib/config.js";
 import { ago, day, discount, distanceKm, errText, kmText, rupee, telLink, timeLeft, validPhone, waLink } from "../lib/format.js";
 import { navigate, useApp, useNow } from "../state.jsx";
 
@@ -275,7 +275,8 @@ function AccountInner() {
 
       {["customer", "owner"].map((plan) => {
         const s = subs[plan];
-        if (plan === "owner" && !s && !business) return null;
+        if (plan === "owner" && (IS_CUSTOMER_APP || (!s && !business))) return null;
+        if (plan === "customer" && IS_OWNER_APP) return null;
         return (
           <div key={plan} className={"status " + (s?.active ? "ok" : "no")}>
             <span style={{ fontSize: 24 }}>{s?.active ? "✅" : "⚠️"}</span>
@@ -301,7 +302,11 @@ function AccountInner() {
       </div>
 
       <div style={{ marginTop: 6 }}>
-        <button className="menu-item" onClick={() => { setMode("owner"); navigate("/owner"); }}>🏪 {business ? "Switch to owner mode" : "Post offers as a business owner"}<span className="chev">›</span></button>
+        {IS_CUSTOMER_APP
+          ? <a className="menu-item" href={WEBSITE_URL} target="_blank" rel="noreferrer">🏪 Own a business? Get the LastPick Business app<span className="chev">›</span></a>
+          : IS_OWNER_APP
+            ? <a className="menu-item" href="#/owner/business">🏪 Business profile<span className="chev">›</span></a>
+            : <button className="menu-item" onClick={() => { setMode("owner"); navigate("/owner"); }}>🏪 {business ? "Switch to owner mode" : "Post offers as a business owner"}<span className="chev">›</span></button>}
         {isAdmin && <a className="menu-item" href="#/admin">🛡️ Admin panel<span className="chev">›</span></a>}
         <a className="menu-item" href="#/help">🛟 Help & support<span className="chev">›</span></a>
         <a className="menu-item" href="#/terms">📜 Terms & disclaimer<span className="chev">›</span></a>

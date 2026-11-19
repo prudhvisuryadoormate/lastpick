@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/index.js";
 import { Empty, NeedLogin, OfferCard, PlanCard, Sheet, Spinner, Toggle } from "../components.jsx";
-import { APP_NAME, CATEGORIES, DURATIONS, EMOJIS, PLANS, TEMPLATES, TINTS } from "../lib/config.js";
+import { APP_NAME, CATEGORIES, DURATIONS, EMOJIS, IS_OWNER_APP, PLANS, TEMPLATES, TINTS } from "../lib/config.js";
 import { ago, day, errText, rupee, telLink, timeLeft, validPhone, waLink } from "../lib/format.js";
 import { navigate, useApp, useNow } from "../state.jsx";
 
@@ -81,7 +81,7 @@ export function OwnerDashboard() {
       {!leads ? <Spinner /> : leads.length === 0
         ? <div className="muted pad" style={{ paddingTop: 0 }}>When a customer taps "Share my number" on your offer, they appear here.</div>
         : leads.slice(0, 4).map((l) => <LeadRow key={l.id} lead={l} onChange={load} />)}
-      <div className="pad"><button className="btn ghost" onClick={() => { setMode("customer"); navigate("/"); }}>👤 Switch to customer view</button></div>
+      {!IS_OWNER_APP && <div className="pad"><button className="btn ghost" onClick={() => { setMode("customer"); navigate("/"); }}>👤 Switch to customer view</button></div>}
     </>
   );
 }

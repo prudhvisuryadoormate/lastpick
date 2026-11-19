@@ -1,6 +1,12 @@
 // ---- Change these to rebrand or reprice the app ----
 export const APP_NAME = "LastPick";
 export const SUPPORT_EMAIL = "support@lastpick.in";
+export const WEBSITE_URL = "https://lastpick-ce569.web.app";
+
+// Which app this build is: "web" (everything), "customer" (LastPick app) or "owner" (LastPick Business app).
+export const APP_VARIANT = import.meta.env?.VITE_APP_VARIANT || "web";
+export const IS_OWNER_APP = APP_VARIANT === "owner";
+export const IS_CUSTOMER_APP = APP_VARIANT === "customer";
 
 // Prices shown in the app. The amount actually charged comes from the Razorpay plans
 // (RAZORPAY_PLAN_CUSTOMER / RAZORPAY_PLAN_OWNER), so keep both in sync.

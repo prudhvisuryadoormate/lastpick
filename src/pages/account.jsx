@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { DEMO_ACCOUNTS, api, isLive } from "../api/index.js";
 import { BackButton, Empty, NeedLogin, PlanCard, Spinner } from "../components.jsx";
-import { APP_NAME, PLANS, SUPPORT_EMAIL } from "../lib/config.js";
+import { APP_NAME, IS_OWNER_APP, PLANS, SUPPORT_EMAIL } from "../lib/config.js";
 import { day, errText, rupee, validPhone } from "../lib/format.js";
 import { navigate, useApp } from "../state.jsx";
 
@@ -97,8 +97,10 @@ export function Login({ next = "/" }) {
   return (
     <div style={{ minHeight: "100vh" }}>
       <div className="hdr" style={{ padding: "34px 20px 26px" }}>
-        <div className="brand"><span className="logo">L</span>{APP_NAME}</div>
-        <p style={{ opacity: .8, margin: "14px 0 0", lineHeight: 1.5 }}>Last-minute offers from businesses near you: rooms, halls, seats, food, slots and more. Talk to the owner directly.</p>
+        <div className="brand"><span className="logo">L</span>{APP_NAME}{IS_OWNER_APP ? " Business" : ""}</div>
+        <p style={{ opacity: .8, margin: "14px 0 0", lineHeight: 1.5 }}>{IS_OWNER_APP
+          ? "Turn empty rooms, halls, seats, slots and leftover stock into sales. Post an offer in a minute and get calls from customers nearby."
+          : "Last-minute offers from businesses near you: rooms, halls, seats, food, slots and more. Talk to the owner directly."}</p>
       </div>
       {tab !== "reset" && <div className="tabs" style={{ marginTop: 16 }}>
         <button className={tab === "login" ? "on" : ""} onClick={() => { setTab("login"); setErr(""); }}>Log in</button>
@@ -124,7 +126,7 @@ export function Login({ next = "/" }) {
           {DEMO_ACCOUNTS.map((a) => <button key={a.email} className="btn ghost" style={{ marginBottom: 8, justifyContent: "space-between" }} disabled={busy} onClick={() => demoLogin(a)}><span>{a.label}</span><span className="muted small">{a.email}</span></button>)}
         </div>
       )}
-      <div className="pad center"><a className="link" href="#/">← Browse offers without logging in</a></div>
+      {!IS_OWNER_APP && <div className="pad center"><a className="link" href="#/">← Browse offers without logging in</a></div>}
     </div>
   );
 }

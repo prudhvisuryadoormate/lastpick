@@ -4,14 +4,15 @@ import { Empty, Spinner } from "./components.jsx";
 import { Account, Contacts, Home, MapPage, OfferPage } from "./pages/customer.jsx";
 import { BusinessPage, OwnerDashboard, OwnerGate, OwnerLeads, OwnerOffers, PostOffer } from "./pages/owner.jsx";
 import { Admin, Help, Login, Privacy, Subscribe, Terms } from "./pages/account.jsx";
-import { match, useApp, useRoute } from "./state.jsx";
+import { match, navigate, useApp, useRoute } from "./state.jsx";
+import { IS_OWNER_APP } from "./lib/config.js";
 
 const CUSTOMER_NAV = [["/", "🏠", "Offers"], ["/map", "🗺️", "Map"], ["/contacts", "📇", "Contacts"], ["/account", "👤", "Account"]];
 const OWNER_NAV = [["/owner", "📊", "Dashboard"], ["/owner/post", "➕", "Post"], ["/owner/leads", "📇", "Leads"], ["/owner/offers", "🗂️", "My offers"], ["/account", "👤", "Account"]];
 
 function Page({ path, query }) {
   let m;
-  if (path === "/") return <Home />;
+  if (path === "/") return IS_OWNER_APP ? <OwnerGate><OwnerDashboard /></OwnerGate> : <Home />;
   if (path === "/map") return <MapPage />;
   if ((m = match("/offer/:id", path))) return <OfferPage id={m.id} />;
   if (path === "/contacts") return <Contacts />;
@@ -48,13 +49,17 @@ export default function App() {
   const { loading, mode, setMode } = useApp();
   const ownerArea = path.startsWith("/owner");
 
+  // the Business app always opens on the owner dashboard
+  useEffect(() => { if (IS_OWNER_APP && ["/", "/map", "/contacts"].includes(path)) navigate("/owner", { replace: true }); }, [path]);
+
   // keep the bottom bar in sync with where the user is
   useEffect(() => {
+    if (IS_OWNER_APP) return;
     if (ownerArea && mode !== "owner") setMode("owner");
     if (["/", "/map", "/contacts"].includes(path) && mode !== "customer") setMode("customer");
   }, [path]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const nav = (ownerArea || (mode === "owner" && path === "/account")) ? OWNER_NAV : CUSTOMER_NAV;
+  const nav = IS_OWNER_APP || ownerArea || (mode === "owner" && path === "/account") ? OWNER_NAV : CUSTOMER_NAV;
   const showNav = path !== "/login";
 
   return (
