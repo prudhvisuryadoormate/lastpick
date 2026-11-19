@@ -1,4 +1,4 @@
-// LastPick Cloud Functions (Firebase, 2nd gen, Node 20).
+// LastPick Cloud Functions (Firebase, 2nd gen, Node 22).
 // - Number exchange: revealContact, logContact, shareNumber
 // - Offers: createOffer (server checks the owner's plan and business)
 // - Billing: Razorpay subscriptions (billing) + razorpayWebhook for renewals

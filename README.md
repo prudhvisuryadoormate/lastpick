@@ -12,7 +12,7 @@ LastPick only connects people. The deal, payment and service are between the cus
 | Login | Firebase Authentication (email + password) | `src/api/firebase.js` |
 | Database + security | Cloud Firestore database **`lastpick`** + security rules | `firestore.rules`, `firestore.indexes.json` |
 | Offer photos | Compressed JPEGs stored with each offer | `src/lib/image.js` |
-| Number exchange, offer posting, payments, admin tools | Cloud Functions, codebase **`lastpick`**, names start with `lp` (Node 20, `asia-south1`) | `functions/index.js` |
+| Number exchange, offer posting, payments, admin tools | Cloud Functions, codebase **`lastpick`**, names start with `lp` (Node 22, `asia-south1`) | `functions/index.js` |
 | Subscriptions | Razorpay Subscriptions (UPI AutoPay, cards, net banking) | `functions/index.js` |
 | Hosting | Firebase Hosting | `firebase.json` |
 | Auto-deploy on push | GitHub Actions | `.github/workflows/deploy.yml` |
