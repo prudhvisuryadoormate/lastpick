@@ -3,7 +3,7 @@ import { api, isLive } from "./api/index.js";
 import { Empty, Spinner } from "./components.jsx";
 import { Account, Contacts, Home, MapPage, OfferPage } from "./pages/customer.jsx";
 import { BusinessPage, OwnerDashboard, OwnerGate, OwnerLeads, OwnerOffers, PostOffer } from "./pages/owner.jsx";
-import { Admin, Help, Login, Privacy, Subscribe, Terms } from "./pages/account.jsx";
+import { Admin, Contact, Help, Login, Privacy, Refund, Subscribe, Terms } from "./pages/account.jsx";
 import { match, navigate, useApp, useRoute } from "./state.jsx";
 import { IS_OWNER_APP } from "./lib/config.js";
 
@@ -28,6 +28,8 @@ function Page({ path, query }) {
   if (path === "/terms") return <Terms />;
   if (path === "/privacy") return <Privacy />;
   if (path === "/help") return <Help />;
+  if (path === "/refund") return <Refund />;
+  if (path === "/contact") return <Contact />;
   return <Empty icon="🧭" title="Page not found" action={<a className="btn main" href="#/">Go to offers</a>}>The link may be broken.</Empty>;
 }
 

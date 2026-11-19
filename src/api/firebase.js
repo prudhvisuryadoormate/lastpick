@@ -11,6 +11,8 @@ import {
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { APP_NAME, PLANS } from "../lib/config.js";
 import { compressPhoto } from "../lib/image.js";
+import { cityKey } from "../lib/config.js";
+import { indianPhone } from "../lib/format.js";
 
 const env = import.meta.env;
 let fb;
@@ -55,7 +57,7 @@ async function call(name, data) {
 
 const mapOffer = (id, d) => ({
   id, businessId: d.businessId, ownerId: d.ownerId, business: { id: d.businessId, ...(d.business || {}) }, title: d.title,
-  description: d.description || "", category: d.category, emoji: d.emoji || "📦", photoUrl: d.photoUrl || null,
+  description: d.description || "", category: d.category, emoji: d.emoji || "📦", photoUrl: d.photoThumb || null, hasPhoto: !!d.hasPhoto,
   origPrice: d.origPrice, price: d.price, quantity: d.quantity || "", endsAt: ms(d.endsAt), status: d.status,
   visible: d.visible, views: d.views || 0, createdAt: ms(d.createdAt) || Date.now(),
 });
@@ -65,7 +67,7 @@ const mapSub = (d) => d && ({
 });
 const mapBiz = (id, d, c) => ({
   id, ownerId: d.ownerId, name: d.name, category: d.category, about: d.about || "", address: d.address || "", area: d.area || "",
-  city: d.city || "", lat: d.lat ?? null, lng: d.lng ?? null, status: d.status, statusNote: d.statusNote || "",
+  city: d.city || "", state: d.state || "", lat: d.lat ?? null, lng: d.lng ?? null, status: d.status, statusNote: d.statusNote || "",
   createdAt: ms(d.createdAt), phone: c?.phone || "", whatsapp: c ? c.whatsapp !== false : true,
 });
 
@@ -97,7 +99,7 @@ export const api = {
     try {
       const cred = await createUserWithEmailAndPassword(F().auth, email.trim(), password);
       await fbUpdateProfile(cred.user, { displayName: name });
-      await setDoc(doc(F().db, "users", cred.user.uid), { name, phone, email: email.trim(), role: "user", createdAt: serverTimestamp() });
+      await setDoc(doc(F().db, "users", cred.user.uid), { name, nameLower: name.toLowerCase(), phone: indianPhone(phone) || phone, email: email.trim(), role: "user", createdAt: serverTimestamp() });
       return { needsConfirmation: false };
     } catch (e) { throw nice(e); }
   },
@@ -109,11 +111,14 @@ export const api = {
     const d = s.exists() ? s.data() : {};
     if (!s.exists()) { // profile missing (e.g. created outside the app): create it
       const u = F().auth.currentUser;
-      await setDoc(doc(F().db, "users", id), { name: u.displayName || "", phone: "", email: u.email, role: "user", createdAt: serverTimestamp() });
+      await setDoc(doc(F().db, "users", id), { name: u.displayName || "", nameLower: (u.displayName || "").toLowerCase(), phone: "", email: u.email, role: "user", createdAt: serverTimestamp() });
     }
-    return { id, name: d.name || "", phone: d.phone || "", email: d.email || F().auth.currentUser.email, role: d.role || "user" };
+    return { id, name: d.name || "", phone: d.phone || "", email: d.email || F().auth.currentUser.email, role: d.role || "user", regions: d.regions || [] };
   },
-  async updateProfile({ name, phone }) { const id = await uid(); await updateDoc(doc(F().db, "users", id), { name, phone }); },
+  async updateProfile({ name, phone }) {
+    const id = await uid();
+    await updateDoc(doc(F().db, "users", id), { name, nameLower: name.toLowerCase(), phone: indianPhone(phone) || phone });
+  },
 
   // ---------- subscriptions ----------
   async mySubscriptions() {
@@ -148,20 +153,34 @@ export const api = {
   },
   async saveBusiness(b) {
     const id = await uid();
-    const fields = { name: b.name, category: b.category, about: b.about || "", address: b.address || "", area: b.area || "", city: b.city || "", lat: b.lat ?? null, lng: b.lng ?? null };
+    const fields = { name: b.name, category: b.category, about: b.about || "", address: b.address || "", area: b.area || "", city: b.city || "",
+      state: b.state || "", cityKey: cityKey(b.city), lat: b.lat ?? null, lng: b.lng ?? null };
     const ref = doc(F().db, "businesses", id);
     const exists = (await getDoc(ref)).exists();
     if (exists) await updateDoc(ref, fields);
     else await setDoc(ref, { ...fields, ownerId: id, status: "pending", statusNote: "", createdAt: serverTimestamp() });
-    await setDoc(doc(F().db, "businessContacts", id), { phone: b.phone, whatsapp: !!b.whatsapp, updatedAt: serverTimestamp() });
+    await setDoc(doc(F().db, "businessContacts", id), { phone: indianPhone(b.phone) || b.phone, whatsapp: !!b.whatsapp, updatedAt: serverTimestamp() });
     return id;
   },
 
   // ---------- offers ----------
-  async listLive() {
-    const q = query(collection(F().db, "offers"), where("visible", "==", true), where("status", "==", "live"),
-      where("endsAt", ">", Timestamp.now()), orderBy("endsAt"), limit(300));
+  // Offers are loaded one city at a time, which keeps reads (and the bill) small at India scale.
+  async listLive(city) {
+    const q = query(collection(F().db, "offers"), where("cityKey", "==", city), where("visible", "==", true), where("status", "==", "live"),
+      where("endsAt", ">", Timestamp.now()), orderBy("endsAt"), limit(200));
     return (await getDocs(q)).docs.map((d) => mapOffer(d.id, d.data()));
+  },
+  async listCities() {
+    const snap = await getDocs(query(collection(F().db, "cities"), orderBy("liveOffers", "desc"), limit(300)));
+    return snap.docs.map((d) => ({ key: d.id, name: d.data().name, state: d.data().state, lat: d.data().lat, lng: d.data().lng, liveOffers: d.data().liveOffers || 0 }));
+  },
+  async getOfferPhoto(id) {
+    try { const s = await getDoc(doc(F().db, "offerPhotos", id)); return s.exists() ? s.data().data : null; } catch { return null; }
+  },
+  async myArchive() {
+    const id = await uid();
+    const q = query(collection(F().db, "offerArchive"), where("ownerId", "==", id), orderBy("endsAt", "desc"), limit(100));
+    return (await getDocs(q)).docs.map((d) => ({ id: d.id, ...d.data(), endsAt: ms(d.data().endsAt), createdAt: ms(d.data().createdAt) }));
   },
   async getOffer(id) {
     try {
@@ -177,7 +196,11 @@ export const api = {
   async createOffer(o) { return call("createOffer", o); },
   async endOffer(id) { await updateDoc(doc(F().db, "offers", id), { status: "ended" }); },
   async addView(id) { try { await updateDoc(doc(F().db, "offers", id), { views: increment(1) }); } catch { /* ignore */ } },
-  async uploadPhoto(file) { return compressPhoto(file); },
+  // returns a small thumbnail (for lists) and a full photo (opened on the offer page)
+  async uploadPhoto(file) {
+    const [thumb, photo] = await Promise.all([compressPhoto(file, 360, 28000), compressPhoto(file, 1000, 190000)]);
+    return { thumb, photo };
+  },
 
   // ---------- number exchange ----------
   async revealContact(offerId) { return call("revealContact", { offerId }); },
@@ -194,7 +217,7 @@ export const api = {
       const x = d.data(), o = x.offer || {};
       return {
         how: x.how, at: ms(x.at) || Date.now(),
-        offer: { id: x.offerId, title: o.title, emoji: o.emoji, category: o.category, photoUrl: o.photoUrl, price: o.price, origPrice: o.origPrice,
+        offer: { id: x.offerId, title: o.title, emoji: o.emoji, category: o.category, photoUrl: o.photoThumb || null, price: o.price, origPrice: o.origPrice,
           endsAt: ms(o.endsAt), business: { name: o.businessName, area: o.area } },
       };
     });
@@ -217,24 +240,13 @@ export const api = {
     await addDoc(collection(F().db, "reports"), { offerId, reporterId: id, reason, details: details || "", status: "open", createdAt: serverTimestamp() });
   },
 
-  // ---------- admin ----------
-  async adminBusinesses() {
-    const bs = await getDocs(query(collection(F().db, "businesses"), orderBy("createdAt", "desc"), limit(500)));
-    return Promise.all(bs.docs.map(async (b) => {
-      const c = await getDoc(doc(F().db, "businessContacts", b.id));
-      return mapBiz(b.id, b.data(), c.exists() ? c.data() : null);
-    }));
-  },
-  async setBusinessStatus(id, status, note) { await updateDoc(doc(F().db, "businesses", id), { status, statusNote: note || "" }); },
-  async adminReports() {
-    const rs = await getDocs(query(collection(F().db, "reports"), orderBy("createdAt", "desc"), limit(300)));
-    return Promise.all(rs.docs.map(async (r) => {
-      const x = r.data();
-      const o = await getDoc(doc(F().db, "offers", x.offerId));
-      return { id: r.id, reason: x.reason, details: x.details, status: x.status, createdAt: ms(x.createdAt), offer: o.exists() ? mapOffer(o.id, o.data()) : null };
-    }));
-  },
-  async resolveReport(id, status) { await updateDoc(doc(F().db, "reports", id), { status }); },
-  async adminRemoveOffer(id) { await updateDoc(doc(F().db, "offers", id), { status: "removed" }); },
+  // ---------- admin & moderators (all through Cloud Functions, which check roles and regions) ----------
+  async adminStats() { return call("adminStats", {}); },
+  async adminFindUsers(q) { return call("adminFindUsers", { q }); },
+  async adminSetRole(email, role, regions) { await call("adminSetRole", { email, role, regions }); },
+  async adminBusinesses(filter = {}) { return call("adminListBusinesses", filter); },
+  async setBusinessStatus(id, status, note) { await call("adminSetBusinessStatus", { businessId: id, status, note }); },
+  async adminReports() { return call("adminListReports", {}); },
+  async resolveReport(id, status, removeOffer = false) { await call("adminResolveReport", { reportId: id, status, removeOffer }); },
   async adminSetPlan(email, plan, months) { await call("adminSetPlan", { email, plan, months }); },
 };

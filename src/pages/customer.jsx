@@ -1,27 +1,63 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/index.js";
 import { BackButton, CategoryChips, Countdown, Disclaimer, Empty, MapView, NeedLogin, OfferCard, OfferImage, Sheet, Spinner, catLabel } from "../components.jsx";
-import { APP_NAME, CATEGORIES, IS_CUSTOMER_APP, IS_OWNER_APP, PLANS, REPORT_REASONS, TINTS, WEBSITE_URL } from "../lib/config.js";
-import { ago, day, discount, distanceKm, errText, kmText, rupee, telLink, timeLeft, validPhone, waLink } from "../lib/format.js";
-import { navigate, useApp, useNow } from "../state.jsx";
+import { APP_NAME, CATEGORIES, IS_CUSTOMER_APP, IS_OWNER_APP, MAJOR_CITIES, PLANS, REPORT_REASONS, TINTS, WEBSITE_URL, cityKey } from "../lib/config.js";
+import { ago, day, discount, distanceKm, errText, kmText, prettyPhone, rupee, telLink, timeLeft, validPhone, waLink } from "../lib/format.js";
+import { navigate, nearestCity, useApp, useNow } from "../state.jsx";
 
-function useLiveOffers() {
+function useLiveOffers(city) {
   const [offers, setOffers] = useState(null);
   const [error, setError] = useState("");
   useEffect(() => {
     let alive = true;
-    const load = () => api.listLive().then((o) => alive && setOffers(o)).catch((e) => alive && setError(errText(e)));
+    setOffers(null); setError("");
+    const load = () => api.listLive(city).then((o) => alive && setOffers(o)).catch((e) => alive && setError(errText(e)));
     load();
-    const i = setInterval(load, 60000);
+    const i = setInterval(load, 120000);
     return () => { alive = false; clearInterval(i); };
-  }, []);
+  }, [city]);
   return { offers, error };
+}
+
+// Pick which city's offers to show. Cities with live offers come first.
+function CityPicker({ onClose }) {
+  const { city, setCity, location } = useApp();
+  const [list, setList] = useState(null);
+  const [q, setQ] = useState("");
+  useEffect(() => {
+    api.listCities().then((live) => {
+      const map = new Map(live.map((c) => [c.key, c]));
+      MAJOR_CITIES.forEach((m) => { const k = cityKey(m.name); if (!map.has(k)) map.set(k, { key: k, name: m.name, state: m.state, lat: m.lat, lng: m.lng, liveOffers: 0 }); });
+      setList([...map.values()].sort((a, b) => b.liveOffers - a.liveOffers || a.name.localeCompare(b.name)));
+    }).catch(() => setList(MAJOR_CITIES.map((m) => ({ key: cityKey(m.name), ...m, liveOffers: 0 }))));
+  }, []);
+  const pick = (c) => { setCity({ key: c.key, name: c.name, state: c.state, lat: c.lat, lng: c.lng }); onClose(); };
+  const shown = (list || []).filter((c) => !q || `${c.name} ${c.state}`.toLowerCase().includes(q.toLowerCase()));
+  return (
+    <Sheet onClose={onClose}>
+      <h2 className="title" style={{ fontSize: 19 }}>Choose your city</h2>
+      <div className="form" style={{ padding: "10px 0 6px" }}>
+        <div className="fld"><input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search city or state" aria-label="Search city" /></div>
+        {location.exact && <button className="btn ghost" onClick={() => { const n = nearestCity(location, list || MAJOR_CITIES); if (n) pick(n); }}>📍 Use nearest city to me</button>}
+      </div>
+      {!list ? <Spinner /> : shown.length === 0
+        ? <div className="muted pad">No match. Offers appear here once a business in that city posts one.</div>
+        : shown.map((c) => (
+          <button key={c.key} className="menu-item" style={{ borderRadius: 0 }} onClick={() => pick(c)}>
+            <span>{c.key === city.key ? "✅" : "🏙️"}</span>
+            <span className="grow"><b>{c.name}</b> <span className="muted small">{c.state}</span></span>
+            <span className="muted small">{c.liveOffers ? `${c.liveOffers} live` : ""}</span>
+          </button>
+        ))}
+    </Sheet>
+  );
 }
 
 // ------------------------------------------------------------------ Home
 export function Home() {
-  const { location, isCustomer, session } = useApp();
-  const { offers, error } = useLiveOffers();
+  const { location, isCustomer, session, city } = useApp();
+  const { offers, error } = useLiveOffers(city.key);
+  const [picking, setPicking] = useState(false);
   const now = useNow(30000);
   const [cat, setCat] = useState("all");
   const [q, setQ] = useState("");
@@ -44,7 +80,9 @@ export function Home() {
     <>
       <div className="hdr">
         <div className="row">
-          <div><div className="loc">Offers near</div><div style={{ fontWeight: 700 }}>📍 {location.label}</div></div>
+          <button onClick={() => setPicking(true)} style={{ background: "none", border: 0, color: "#fff", textAlign: "left", padding: 0 }} aria-label="Change city">
+            <div className="loc">Offers in</div><div style={{ fontWeight: 700 }}>📍 {city.name} ▾</div>
+          </button>
           <a className="logo" href="#/account" aria-label="Account">L</a>
         </div>
         <div className="search">🔎<input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search rooms, halls, food, seats…" aria-label="Search offers" /></div>
@@ -63,20 +101,22 @@ export function Home() {
       </div>
       {error && <div className="pad"><div className="error">{error}</div></div>}
       {!offers && !error && <Spinner />}
-      {offers && shown.length === 0 && <Empty icon="🕵️" title="No live offers here">Try another category, or check back this evening.</Empty>}
+      {offers && shown.length === 0 && <Empty icon="🕵️" title={`No live offers in ${city.name} yet`} action={<button className="btn ghost" onClick={() => setPicking(true)}>Choose another city</button>}>Try another category, or check back this evening.</Empty>}
       {shown.map((o) => <OfferCard key={o.id} offer={o} />)}
+      {picking && <CityPicker onClose={() => setPicking(false)} />}
     </>
   );
 }
 
 // ------------------------------------------------------------------ Map
 export function MapPage() {
-  const { location } = useApp();
-  const { offers } = useLiveOffers();
+  const { location, city } = useApp();
+  const { offers } = useLiveOffers(city.key);
+  const center = location.exact && distanceKm(location, city) < 60 ? location : { lat: city.lat ?? location.lat, lng: city.lng ?? location.lng };
   return (
     <>
-      <div className="page-h"><h1 className="title">Offers around you</h1><div className="muted">Tap a price to open the offer</div></div>
-      {offers ? <MapView offers={offers} center={location} /> : <Spinner />}
+      <div className="page-h"><h1 className="title">Offers in {city.name}</h1><div className="muted">Tap a price to open the offer. Change the city on the Offers tab.</div></div>
+      {offers ? <MapView offers={offers} center={center} /> : <Spinner />}
     </>
   );
 }
@@ -93,9 +133,14 @@ export function OfferPage({ id }) {
   const now = useNow();
   const own = !!business && offer?.businessId === business.id;
 
+  const [photo, setPhoto] = useState(null);
   useEffect(() => {
     let alive = true;
-    api.getOffer(id).then((o) => { if (!alive) return; setOffer(o); if (o) api.addView(id); }).catch(() => alive && setOffer(null));
+    api.getOffer(id).then((o) => {
+      if (!alive) return;
+      setOffer(o);
+      if (o) { api.addView(id); if (o.hasPhoto) api.getOfferPhoto(id).then((p) => alive && p && setPhoto(p)); }
+    }).catch(() => alive && setOffer(null));
     return () => { alive = false; };
   }, [id]);
 
@@ -123,12 +168,12 @@ export function OfferPage({ id }) {
 
   return (
     <>
-      <OfferImage offer={offer} className="hero">
+      <OfferImage offer={photo ? { ...offer, photoUrl: photo } : offer} className="hero">
         <BackButton to="/" />
         {!ended && <Countdown end={offer.endsAt} />}
       </OfferImage>
       <div className="pad">
-        <div className="muted">{catLabel(offer.category)} · {offer.business?.area}{km != null ? " · " + kmText(km) : ""}</div>
+        <div className="muted">{catLabel(offer.category)} · {offer.business?.area}{km != null && km < 100 ? " · " + kmText(km) : ""}</div>
         <h1 className="title" style={{ margin: "6px 0 6px", lineHeight: 1.2 }}>{offer.title}</h1>
         {offer.description && <div className="muted" style={{ whiteSpace: "pre-line" }}>{offer.description}</div>}
 
@@ -158,7 +203,7 @@ export function OfferPage({ id }) {
             <div className="error" style={{ marginTop: 12 }}>{contactErr}</div>
           ) : !contact ? <Spinner /> : (
             <>
-              <div className="num" style={{ marginTop: 12 }}>{contact.phone}</div>
+              <div className="num" style={{ marginTop: 12 }}>{prettyPhone(contact.phone)}</div>
               <div className="two" style={{ marginTop: 10 }}>
                 <a className="btn call" href={telLink(contact.phone)} onClick={() => api.logContact(offer.id, "Called")}>📞 Call</a>
                 {contact.whatsapp
@@ -167,7 +212,7 @@ export function OfferPage({ id }) {
               </div>
               {!ended && (
                 <button className="btn ghost" style={{ marginTop: 10 }} disabled={shared || busy} onClick={share}>
-                  {shared ? "✓ Your number was shared with the owner" : busy ? "Sharing…" : `🙋 Share my number${profile?.phone ? ` (${profile.phone})` : ""} with the owner`}
+                  {shared ? "✓ Your number was shared with the owner" : busy ? "Sharing…" : `🙋 Share my number${profile?.phone ? ` (${prettyPhone(profile.phone)})` : ""} with the owner`}
                 </button>
               )}
             </>
@@ -234,7 +279,7 @@ function ContactsInner() {
             <a className="grow" href={"#/offer/" + c.offer.id}>
               <b className="ellipsis" style={{ display: "block", fontSize: 14 }}>{c.offer.business?.name}</b>
               <div className="muted small ellipsis">{c.offer.title}</div>
-              <div className="muted small">{p?.phone || (p?.error ? "Number unavailable" : "…")} · {c.how} · {ago(c.at)}</div>
+              <div className="muted small">{p?.phone ? prettyPhone(p.phone) : p?.error ? "Number unavailable" : "…"} · {c.how} · {ago(c.at)}</div>
             </a>
             {p?.phone && <a className="icon-btn" aria-label="Call" href={telLink(p.phone)} onClick={() => api.logContact(c.offer.id, "Called")}>📞</a>}
             {p?.phone && p.whatsapp && <a className="icon-btn wa" aria-label="WhatsApp" target="_blank" rel="noreferrer" href={waLink(p.phone, `Hi, about your ${APP_NAME} offer: "${c.offer.title}"`)} onClick={() => api.logContact(c.offer.id, "WhatsApp")}>💬</a>}
@@ -250,7 +295,7 @@ export function Account() {
   return <NeedLogin why="Log in to your account"><AccountInner /></NeedLogin>;
 }
 function AccountInner() {
-  const { profile, subs, business, isAdmin, refresh, toast, setMode } = useApp();
+  const { profile, subs, business, isStaff, refresh, toast, setMode } = useApp();
   const [name, setName] = useState(profile?.name || "");
   const [phone, setPhone] = useState(profile?.phone || "");
   const [saving, setSaving] = useState(false);
@@ -259,7 +304,7 @@ function AccountInner() {
 
   const save = async () => {
     if (!name.trim()) return toast("Please enter your name");
-    if (!validPhone(phone)) return toast("Please enter a valid phone number");
+    if (!validPhone(phone)) return toast("Please enter a valid Indian mobile number");
     setSaving(true);
     try { await api.updateProfile({ name: name.trim(), phone: phone.trim() }); await refresh(); toast("Saved"); } catch (e) { toast(errText(e)); }
     setSaving(false);
@@ -307,10 +352,12 @@ function AccountInner() {
           : IS_OWNER_APP
             ? <a className="menu-item" href="#/owner/business">🏪 Business profile<span className="chev">›</span></a>
             : <button className="menu-item" onClick={() => { setMode("owner"); navigate("/owner"); }}>🏪 {business ? "Switch to owner mode" : "Post offers as a business owner"}<span className="chev">›</span></button>}
-        {isAdmin && <a className="menu-item" href="#/admin">🛡️ Admin panel<span className="chev">›</span></a>}
+        {isStaff && <a className="menu-item" href="#/admin">🛡️ {profile?.role === "moderator" ? "Moderator panel" : "Admin panel"}<span className="chev">›</span></a>}
         <a className="menu-item" href="#/help">🛟 Help & support<span className="chev">›</span></a>
         <a className="menu-item" href="#/terms">📜 Terms & disclaimer<span className="chev">›</span></a>
         <a className="menu-item" href="#/privacy">🔏 Privacy policy<span className="chev">›</span></a>
+        <a className="menu-item" href="#/refund">💸 Refund & cancellation policy<span className="chev">›</span></a>
+        <a className="menu-item" href="#/contact">✉️ Contact us<span className="chev">›</span></a>
         <button className="menu-item" style={{ color: "var(--bad)" }} onClick={async () => { await api.signOut(); navigate("/"); }}>↩ Log out<span className="chev">›</span></button>
       </div>
 

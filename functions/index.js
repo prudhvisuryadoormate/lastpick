@@ -2,12 +2,12 @@
 // - Number exchange: revealContact, logContact, shareNumber
 // - Offers: createOffer (server checks the owner's plan and business)
 // - Billing: Razorpay subscriptions (billing) + razorpayWebhook for renewals
-// - Admin: adminSetPlan
-// - Upkeep: keep offer visibility in sync with business status and owner plan; expire old plans hourly
+// - Admin: plans, roles (admin / city moderators), business verification, reports, India-wide stats, user search
+// - Upkeep: offer visibility sync, per-city counters, hourly plan expiry, nightly archive + cleanup
 const crypto = require("crypto");
 const { setGlobalOptions } = require("firebase-functions/v2");
 const { onCall, onRequest, HttpsError } = require("firebase-functions/v2/https");
-const { onDocumentWritten } = require("firebase-functions/v2/firestore");
+const { onDocumentWritten, onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { defineSecret, defineString } = require("firebase-functions/params");
 const { initializeApp } = require("firebase-admin/app");
@@ -42,11 +42,18 @@ async function isAdmin(uid) {
   const u = await db.doc(`users/${uid}`).get();
   return u.exists && u.data().role === "admin";
 }
-async function needAdmin(req) {
+// Super admin ("admin") sees all of India. A "moderator" only manages the states listed in users/{uid}.regions.
+async function staff(req, { superOnly = false } = {}) {
   const uid = needAuth(req);
-  if (!(await isAdmin(uid))) throw new HttpsError("permission-denied", "Admins only");
-  return uid;
+  const u = (await db.doc(`users/${uid}`).get()).data() || {};
+  if (u.role === "admin") return { uid, role: "admin", regions: null, canSee: () => true };
+  if (u.role === "moderator" && !superOnly) {
+    const regions = Array.isArray(u.regions) ? u.regions : [];
+    return { uid, role: "moderator", regions, canSee: (state) => regions.includes(state) };
+  }
+  throw new HttpsError("permission-denied", superOnly ? "Super admins only" : "Admins only");
 }
+async function needAdmin(req) { return (await staff(req, { superOnly: true })).uid; }
 function subActive(s) {
   return !!s && ["active", "cancelled"].includes(s.status) && s.currentPeriodEnd && s.currentPeriodEnd.toMillis() > Date.now();
 }
@@ -61,9 +68,32 @@ async function getOffer(offerId) {
   return { id: snap.id, ...snap.data() };
 }
 const offerSummary = (o) => ({
-  title: o.title, emoji: o.emoji || "📦", category: o.category, photoUrl: o.photoUrl || null, price: o.price,
-  origPrice: o.origPrice, endsAt: o.endsAt, businessName: o.business?.name || "", area: o.business?.area || "",
+  title: o.title, emoji: o.emoji || "📦", category: o.category, photoThumb: o.photoThumb || null, price: o.price,
+  origPrice: o.origPrice, endsAt: o.endsAt, businessName: o.business?.name || "", area: o.business?.area || "", city: o.business?.city || "",
 });
+const cityKey = (name) => String(name || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+const bizSummary = (b) => ({
+  name: b.name, area: b.area || "", city: b.city || "", state: b.state || "", cityKey: cityKey(b.city),
+  lat: b.lat ?? null, lng: b.lng ?? null,
+});
+const DAY = 86400000;
+// keep in sync with RETENTION in src/lib/config.js
+const RETENTION = { endedOfferVisibleDays: 7, archiveDays: 365, leadsDays: 180, contactsDays: 180, reportsDays: 365 };
+const isDataImage = (v, max) => typeof v === "string" && /^data:image\/(jpeg|png|webp);base64,/.test(v) && v.length <= max;
+
+// Per-city counter of live offers (cities/{cityKey}), used for the city picker and the admin dashboard.
+async function refreshCity(key) {
+  if (!key) return;
+  const live = await db.collection("offers").where("cityKey", "==", key).where("visible", "==", true)
+    .where("status", "==", "live").where("endsAt", ">", Timestamp.now()).count().get();
+  const businesses = await db.collection("businesses").where("cityKey", "==", key).where("status", "==", "verified").count().get();
+  const sample = await db.collection("businesses").where("cityKey", "==", key).limit(1).get();
+  const b = sample.empty ? {} : sample.docs[0].data();
+  await db.doc(`cities/${key}`).set({
+    name: b.city || key, state: b.state || "", lat: b.lat ?? null, lng: b.lng ?? null,
+    liveOffers: live.data().count, verifiedBusinesses: businesses.data().count, updatedAt: FieldValue.serverTimestamp(),
+  }, { merge: true });
+}
 const str = (v, max) => (typeof v === "string" ? v.trim().slice(0, max) : "");
 
 // Recompute whether an owner's offers are shown to customers:
@@ -72,16 +102,20 @@ async function syncOwnerOffers(ownerId) {
   const [biz, active] = await Promise.all([db.doc(`businesses/${ownerId}`).get(), planActive(ownerId, "owner")]);
   const b = biz.exists ? biz.data() : null;
   const visible = !!b && b.status === "verified" && active;
-  const business = b ? { name: b.name, area: b.area || "", city: b.city || "", lat: b.lat ?? null, lng: b.lng ?? null } : null;
+  const business = b ? bizSummary(b) : null;
   const offers = await db.collection("offers").where("ownerId", "==", ownerId).get();
+  const keys = new Set();
   let batch = db.batch(), n = 0;
   for (const d of offers.docs) {
+    keys.add(d.data().cityKey);
     const patch = { visible };
-    if (business) patch.business = business;
+    if (business) { patch.business = business; patch.cityKey = business.cityKey; keys.add(business.cityKey); }
     batch.update(d.ref, patch);
     if (++n % 400 === 0) { await batch.commit(); batch = db.batch(); }
   }
   await batch.commit();
+  if (b) keys.add(cityKey(b.city));
+  await Promise.all([...keys].filter(Boolean).map(refreshCity));
 }
 
 // ---------------------------------------------------------------- offers
@@ -95,23 +129,32 @@ exports.lpCreateOffer = onCall(async (req) => {
   if (!(await planActive(uid, "owner"))) throw new HttpsError("permission-denied", "An active Owner Pro subscription is needed to post offers");
   const contact = await db.doc(`businessContacts/${uid}`).get();
   if (!contact.exists) throw new HttpsError("failed-precondition", "Add your contact number in Business profile first");
+  if (!b.city || !b.state) throw new HttpsError("failed-precondition", "Add your city and state in Business profile first");
 
   const title = str(d.title, 120);
   const origPrice = Number(d.origPrice), price = Number(d.price), endsAt = Number(d.endsAt);
   if (title.length < 3) throw new HttpsError("invalid-argument", "Title is too short");
   if (!(origPrice > 0) || !(price >= 0) || !(price < origPrice)) throw new HttpsError("invalid-argument", "Offer price must be lower than the normal price");
   if (!(endsAt > Date.now()) || endsAt > Date.now() + MAX_OFFER_MS + 60000) throw new HttpsError("invalid-argument", "Offers can run for up to 30 days");
-  // photos are small compressed JPEGs stored inline (data URL, max ~150 KB)
-  const photoUrl = typeof d.photoUrl === "string" && /^data:image\/(jpeg|png|webp);base64,/.test(d.photoUrl) && d.photoUrl.length <= 200000 ? d.photoUrl : null;
+  // photo: a small thumbnail lives on the offer (for lists); the full photo lives in offerPhotos/{id} (opened on demand)
+  const photoThumb = isDataImage(d.photoThumb, 30000) ? d.photoThumb : null;
+  const photo = isDataImage(d.photo, 200000) ? d.photo : null;
+  const discount = 1 - price / origPrice;
+  const business = bizSummary(b);
 
-  const ref = await db.collection("offers").add({
-    ownerId: uid, businessId: uid,
-    business: { name: b.name, area: b.area || "", city: b.city || "", lat: b.lat ?? null, lng: b.lng ?? null },
+  const ref = db.collection("offers").doc();
+  const batch = db.batch();
+  batch.set(ref, {
+    ownerId: uid, businessId: uid, business, cityKey: business.cityKey,
     title, description: str(d.description, 1000), category: str(d.category, 30) || "other", emoji: str(d.emoji, 8) || "📦",
-    photoUrl, origPrice, price, quantity: str(d.quantity, 60),
+    photoThumb, hasPhoto: !!photo, origPrice, price, quantity: str(d.quantity, 60),
     endsAt: Timestamp.fromMillis(endsAt), status: "live", visible: b.status === "verified", views: 0,
+    flags: discount >= 0.9 ? ["very-high-discount"] : [],
     createdAt: FieldValue.serverTimestamp(),
   });
+  if (photo) batch.set(db.doc(`offerPhotos/${ref.id}`), { ownerId: uid, data: photo, createdAt: FieldValue.serverTimestamp() });
+  await batch.commit();
+  await refreshCity(business.cityKey);
   return { id: ref.id, visible: b.status === "verified" };
 });
 
@@ -275,7 +318,7 @@ exports.lpAdminSetPlan = onCall(async (req) => {
 // ---------------------------------------------------------------- upkeep triggers
 exports.lpOnBusinessWrite = onDocumentWritten({ document: "businesses/{ownerId}", database: DB_ID }, async (event) => {
   const before = event.data?.before?.data(), after = event.data?.after?.data();
-  const keys = ["status", "name", "area", "city", "lat", "lng"];
+  const keys = ["status", "name", "area", "city", "state", "lat", "lng"];
   if (before && after && keys.every((k) => before[k] === after[k])) return;
   await syncOwnerOffers(event.params.ownerId);
 });
@@ -288,7 +331,7 @@ exports.lpOnSubscriptionWrite = onDocumentWritten({ document: "subscriptions/{su
   await syncOwnerOffers(s.userId);
 });
 
-// Mark plans whose paid period ended as expired (webhooks normally do this; this is the safety net).
+// Hourly: mark plans whose paid period ended as expired (the safety net for webhooks) and refresh city counters.
 exports.lpExpirePlans = onSchedule("every 60 minutes", async () => {
   const due = await db.collection("subscriptions")
     .where("status", "in", ["active", "cancelled"])
@@ -297,4 +340,207 @@ exports.lpExpirePlans = onSchedule("every 60 minutes", async () => {
   const batch = db.batch();
   due.docs.forEach((d) => batch.update(d.ref, { status: "expired", updatedAt: FieldValue.serverTimestamp() }));
   await batch.commit();
+  const cities = await db.collection("cities").select().get();
+  for (const c of cities.docs) await refreshCity(c.id);
+});
+
+// Keep city counters right when an offer ends or is removed early.
+exports.lpOnOfferWrite = onDocumentWritten({ document: "offers/{offerId}", database: DB_ID }, async (event) => {
+  const before = event.data?.before?.data(), after = event.data?.after?.data();
+  if (before && after && before.status === after.status && before.visible === after.visible) return;
+  const keys = new Set([before?.cityKey, after?.cityKey].filter(Boolean));
+  for (const k of keys) await refreshCity(k);
+});
+
+// A new report: stamp it with the offer's business and state (so city moderators see it) and count it on the business.
+exports.lpOnReportCreate = onDocumentCreated({ document: "reports/{reportId}", database: DB_ID }, async (event) => {
+  const r = event.data?.data();
+  if (!r?.offerId) return;
+  const offer = (await db.doc(`offers/${r.offerId}`).get()).data();
+  if (!offer) return;
+  await event.data.ref.set({ businessId: offer.businessId, state: offer.business?.state || "", city: offer.business?.city || "" }, { merge: true });
+  await db.doc(`businesses/${offer.businessId}`).set({ reportCount: FieldValue.increment(1) }, { merge: true });
+});
+
+// Nightly (02:30 IST): archive ended offers into a compact history and delete old activity, to keep storage small.
+async function deleteWhere(q, max = 5000) {
+  let total = 0;
+  while (total < max) {
+    const snap = await q.limit(400).get();
+    if (snap.empty) break;
+    const batch = db.batch();
+    snap.docs.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+    total += snap.size;
+  }
+  return total;
+}
+exports.lpNightlyCleanup = onSchedule({ schedule: "30 2 * * *", timeZone: "Asia/Kolkata", timeoutSeconds: 540 }, async () => {
+  const now = Date.now();
+  const cutoff = Timestamp.fromMillis(now - RETENTION.endedOfferVisibleDays * DAY);
+  let archived = 0;
+  while (archived < 5000) {
+    const snap = await db.collection("offers").where("endsAt", "<", cutoff).limit(200).get();
+    if (snap.empty) break;
+    const ids = snap.docs.map((d) => d.id);
+    const leadCounts = await Promise.all(ids.map((id) => db.collection("leads").where("offerId", "==", id).count().get()));
+    const batch = db.batch();
+    snap.docs.forEach((d, i) => {
+      const o = d.data();
+      batch.set(db.doc(`offerArchive/${d.id}`), {
+        ownerId: o.ownerId, businessId: o.businessId, businessName: o.business?.name || "", city: o.business?.city || "",
+        state: o.business?.state || "", cityKey: o.cityKey || "", title: o.title, category: o.category, emoji: o.emoji || "📦",
+        origPrice: o.origPrice, price: o.price, views: o.views || 0, leads: leadCounts[i].data().count,
+        status: o.status, createdAt: o.createdAt || null, endsAt: o.endsAt, archivedAt: FieldValue.serverTimestamp(),
+      });
+      batch.delete(d.ref);
+      batch.delete(db.doc(`offerPhotos/${d.id}`));
+    });
+    await batch.commit();
+    archived += snap.size;
+  }
+  const t = (days) => Timestamp.fromMillis(now - days * DAY);
+  const archiveDeleted = await deleteWhere(db.collection("offerArchive").where("endsAt", "<", t(RETENTION.archiveDays)));
+  const leadsDeleted = await deleteWhere(db.collection("leads").where("createdAt", "<", t(RETENTION.leadsDays)));
+  const contactsDeleted = await deleteWhere(db.collection("customerContacts").where("at", "<", t(RETENTION.contactsDays)));
+  const oldReports = await db.collection("reports").where("createdAt", "<", t(RETENTION.reportsDays)).limit(400).get();
+  const rb = db.batch(); let reportsDeleted = 0;
+  oldReports.docs.forEach((d) => { if (d.data().status !== "open") { rb.delete(d.ref); reportsDeleted++; } });
+  await rb.commit();
+  console.log(JSON.stringify({ archived, archiveDeleted, leadsDeleted, contactsDeleted, reportsDeleted }));
+});
+
+// ---------------------------------------------------------------- admin & moderator tools
+const ACTIVE_SUB = (plan) => db.collection("subscriptions").where("plan", "==", plan)
+  .where("status", "in", ["active", "cancelled"]).where("currentPeriodEnd", ">", Timestamp.now());
+
+exports.lpAdminStats = onCall(async (req) => {
+  const me = await staff(req);
+  const count = async (q) => (await q.count().get()).data().count;
+  const since30 = Timestamp.fromMillis(Date.now() - 30 * DAY);
+  const [users, verified, pending, suspended, customers, owners, leads30, openReports, archived] = await Promise.all([
+    count(db.collection("users")),
+    count(db.collection("businesses").where("status", "==", "verified")),
+    count(db.collection("businesses").where("status", "==", "pending")),
+    count(db.collection("businesses").where("status", "==", "suspended")),
+    count(ACTIVE_SUB("customer")), count(ACTIVE_SUB("owner")),
+    count(db.collection("leads").where("createdAt", ">", since30)),
+    count(db.collection("reports").where("status", "==", "open")),
+    count(db.collection("offerArchive")),
+  ]);
+  const cities = (await db.collection("cities").orderBy("liveOffers", "desc").limit(300).get()).docs
+    .map((d) => ({ key: d.id, ...d.data(), updatedAt: undefined }))
+    .filter((c) => me.canSee(c.state));
+  const liveOffers = cities.reduce((n, c) => n + (c.liveOffers || 0), 0);
+  return {
+    role: me.role, regions: me.regions,
+    totals: { users, verified, pending, suspended, customers, owners, leads30, openReports, archived, liveOffers },
+    cities,
+  };
+});
+
+exports.lpAdminFindUsers = onCall(async (req) => {
+  await staff(req, { superOnly: true });
+  const q = str(req.data?.q, 80);
+  let docs = [];
+  if (!q) docs = (await db.collection("users").orderBy("createdAt", "desc").limit(50).get()).docs;
+  else if (q.includes("@")) {
+    try { const u = await getAuth().getUserByEmail(q); const d = await db.doc(`users/${u.uid}`).get(); if (d.exists) docs = [d]; } catch { /* none */ }
+  } else if (/\d{6,}/.test(q.replace(/\D/g, ""))) {
+    const d = q.replace(/\D/g, "").slice(-10);
+    docs = (await db.collection("users").where("phone", "==", "+91" + d).limit(20).get()).docs;
+  } else {
+    const name = q[0].toUpperCase() + q.slice(1);
+    docs = (await db.collection("users").orderBy("name").startAt(name).endAt(name + "\uf8ff").limit(30).get()).docs;
+  }
+  return Promise.all(docs.map(async (d) => {
+    const u = d.data();
+    const [c, o, b] = await Promise.all([
+      db.doc(`subscriptions/${d.id}_customer`).get(), db.doc(`subscriptions/${d.id}_owner`).get(), db.doc(`businesses/${d.id}`).get(),
+    ]);
+    const sub = (s) => s.exists ? { status: s.data().status, until: s.data().currentPeriodEnd?.toMillis() || null, active: subActive(s.data()) } : null;
+    return {
+      id: d.id, name: u.name || "", phone: u.phone || "", email: u.email || "", role: u.role || "user", regions: u.regions || [],
+      createdAt: u.createdAt?.toMillis?.() || null, customer: sub(c), owner: sub(o),
+      business: b.exists ? { name: b.data().name, city: b.data().city, state: b.data().state, status: b.data().status } : null,
+    };
+  }));
+});
+
+// Set someone's role: "user", "moderator" (with regions = list of states) or "admin".
+exports.lpAdminSetRole = onCall(async (req) => {
+  const me = await needAdmin(req);
+  const { email, role } = req.data || {};
+  if (!["user", "moderator", "admin"].includes(role)) throw new HttpsError("invalid-argument", "Unknown role");
+  let user;
+  try { user = await getAuth().getUserByEmail(String(email || "").trim()); } catch { throw new HttpsError("not-found", "No user with that email"); }
+  if (user.uid === me && role !== "admin") throw new HttpsError("failed-precondition", "You can't remove your own admin access");
+  const regions = role === "moderator" ? (Array.isArray(req.data.regions) ? req.data.regions.map((r) => str(r, 60)).filter(Boolean) : []) : [];
+  await db.doc(`users/${user.uid}`).set({ role, regions }, { merge: true });
+  return { ok: true };
+});
+
+exports.lpAdminListBusinesses = onCall(async (req) => {
+  const me = await staff(req);
+  const status = ["pending", "verified", "rejected", "suspended"].includes(req.data?.status) ? req.data.status : null;
+  const state = str(req.data?.state, 60);
+  let q = db.collection("businesses");
+  if (status) q = q.where("status", "==", status);
+  if (state) q = q.where("state", "==", state);
+  const snap = await q.orderBy("createdAt", "desc").limit(200).get();
+  const list = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((b) => me.canSee(b.state));
+  const contacts = await Promise.all(list.map((b) => db.doc(`businessContacts/${b.id}`).get()));
+  const phones = contacts.map((c) => c.data()?.phone || "");
+  return list.map((b, i) => {
+    const dupes = phones.filter((p) => p && p === phones[i]).length;
+    const flags = [];
+    if ((b.reportCount || 0) >= 2) flags.push(`Reported ${b.reportCount}×`);
+    if (dupes > 1) flags.push("Same phone as another business");
+    if (b.createdAt && Date.now() - b.createdAt.toMillis() < 2 * DAY) flags.push("New in last 48 h");
+    return {
+      id: b.id, name: b.name, category: b.category, address: b.address || "", area: b.area || "", city: b.city || "", state: b.state || "",
+      lat: b.lat ?? null, lng: b.lng ?? null, status: b.status, statusNote: b.statusNote || "", reportCount: b.reportCount || 0,
+      createdAt: b.createdAt?.toMillis?.() || null, phone: phones[i], flags,
+    };
+  });
+});
+
+exports.lpAdminSetBusinessStatus = onCall(async (req) => {
+  const me = await staff(req);
+  const { businessId, status } = req.data || {};
+  if (!["pending", "verified", "rejected", "suspended"].includes(status)) throw new HttpsError("invalid-argument", "Unknown status");
+  const ref = db.doc(`businesses/${businessId}`);
+  const b = (await ref.get()).data();
+  if (!b) throw new HttpsError("not-found", "Business not found");
+  if (!me.canSee(b.state)) throw new HttpsError("permission-denied", "This business is outside your region");
+  await ref.update({ status, statusNote: str(req.data.note, 300), reviewedBy: me.uid, reviewedAt: FieldValue.serverTimestamp() });
+  return { ok: true };
+});
+
+exports.lpAdminListReports = onCall(async (req) => {
+  const me = await staff(req);
+  const snap = await db.collection("reports").where("status", "==", "open").orderBy("createdAt", "desc").limit(200).get();
+  const list = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((r) => me.canSee(r.state));
+  const offers = await Promise.all(list.map((r) => db.doc(`offers/${r.offerId}`).get()));
+  return list.map((r, i) => {
+    const o = offers[i].data();
+    return {
+      id: r.id, reason: r.reason, details: r.details || "", status: r.status, createdAt: r.createdAt?.toMillis?.() || null,
+      city: r.city || "", state: r.state || "",
+      offer: o ? { id: offers[i].id, title: o.title, status: o.status, business: { name: o.business?.name || "", city: o.business?.city || "" } } : null,
+    };
+  });
+});
+
+exports.lpAdminResolveReport = onCall(async (req) => {
+  const me = await staff(req);
+  const { reportId, status, removeOffer } = req.data || {};
+  if (!["dismissed", "actioned"].includes(status)) throw new HttpsError("invalid-argument", "Unknown status");
+  const ref = db.doc(`reports/${reportId}`);
+  const r = (await ref.get()).data();
+  if (!r) throw new HttpsError("not-found", "Report not found");
+  if (!me.canSee(r.state)) throw new HttpsError("permission-denied", "This report is outside your region");
+  if (removeOffer && r.offerId) await db.doc(`offers/${r.offerId}`).set({ status: "removed" }, { merge: true });
+  await ref.update({ status, resolvedBy: me.uid, resolvedAt: FieldValue.serverTimestamp() });
+  return { ok: true };
 });

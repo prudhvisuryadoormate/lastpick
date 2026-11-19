@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { DEMO_ACCOUNTS, api, isLive } from "../api/index.js";
 import { BackButton, Empty, NeedLogin, PlanCard, Spinner } from "../components.jsx";
-import { APP_NAME, IS_OWNER_APP, PLANS, SUPPORT_EMAIL } from "../lib/config.js";
-import { day, errText, rupee, validPhone } from "../lib/format.js";
+import { APP_NAME, INDIAN_STATES, IS_OWNER_APP, PLANS, SUPPORT_EMAIL } from "../lib/config.js";
+import { ago, day, errText, prettyPhone, rupee, validPhone } from "../lib/format.js";
 import { navigate, useApp } from "../state.jsx";
 
 // ------------------------------------------------------------------ Subscribe
@@ -78,7 +78,7 @@ export function Login({ next = "/" }) {
     if (f.password.length < 6) return setErr("Password must be at least 6 characters");
     if (tab === "signup") {
       if (!f.name.trim()) return setErr("Please enter your name");
-      if (!validPhone(f.phone)) return setErr("Please enter a valid 10-digit phone number");
+      if (!validPhone(f.phone)) return setErr("Please enter a valid Indian mobile number (+91)");
     }
     setBusy(true);
     try {
@@ -110,7 +110,7 @@ export function Login({ next = "/" }) {
         {tab === "reset" && <div><h2 className="title" style={{ fontSize: 19 }}>Reset password</h2><div className="muted">We'll email you a link to set a new password.</div></div>}
         {tab === "signup" && <>
           <div className="fld"><label>Your name</label><input autoComplete="name" value={f.name} onChange={(e) => set("name", e.target.value)} /></div>
-          <div className="fld"><label>Mobile number</label><input inputMode="tel" autoComplete="tel" value={f.phone} onChange={(e) => set("phone", e.target.value)} placeholder="10-digit mobile number" /></div>
+          <div className="fld"><label>Mobile number (India)</label><input inputMode="tel" autoComplete="tel" value={f.phone} onChange={(e) => set("phone", e.target.value)} placeholder="+91 98765 43210" /></div>
         </>}
         <div className="fld"><label>Email</label><input type="email" autoComplete="email" value={f.email} onChange={(e) => set("email", e.target.value)} /></div>
         {tab !== "reset" && <div className="fld"><label>Password</label><input type="password" autoComplete={tab === "login" ? "current-password" : "new-password"} value={f.password} onChange={(e) => set("password", e.target.value)} /></div>}
@@ -118,7 +118,7 @@ export function Login({ next = "/" }) {
         <button className="btn main" disabled={busy}>{busy ? "Please wait…" : tab === "login" ? "Log in" : tab === "signup" ? "Create account" : "Send reset link"}</button>
         {tab === "login" && <button type="button" className="link" onClick={() => setTab("reset")}>Forgot password?</button>}
         {tab === "reset" && <button type="button" className="link" onClick={() => setTab("login")}>Back to log in</button>}
-        {tab === "signup" && <div className="note" style={{ marginTop: 0 }}>By signing up you agree to our <a className="link" href="#/terms">terms</a> and <a className="link" href="#/privacy">privacy policy</a>.</div>}
+        {tab === "signup" && <div className="note" style={{ marginTop: 0 }}>By signing up you agree to our <a className="link" href="#/terms">terms</a>, <a className="link" href="#/privacy">privacy policy</a> and <a className="link" href="#/refund">refund policy</a>. {APP_NAME} is available in India only.</div>}
       </form>
       {!isLive && (
         <div className="pad">
@@ -127,6 +127,9 @@ export function Login({ next = "/" }) {
         </div>
       )}
       {!IS_OWNER_APP && <div className="pad center"><a className="link" href="#/">← Browse offers without logging in</a></div>}
+      <div className="center small muted" style={{ paddingBottom: 24 }}>
+        <a href="#/terms">Terms</a> · <a href="#/privacy">Privacy</a> · <a href="#/refund">Refunds</a> · <a href="#/contact">Contact</a>
+      </div>
     </div>
   );
 }
@@ -197,46 +200,142 @@ export function Help() {
   );
 }
 
-// ------------------------------------------------------------------ Admin
+// ------------------------------------------------------------------ Refund & contact (needed for payment-gateway KYC)
+export function Refund() {
+  return (
+    <>
+      <div style={{ position: "relative", height: 62 }}><BackButton /></div>
+      <div className="legal">
+        <h1 className="title">Refund & cancellation policy</h1>
+        <p className="muted">Template text: have a lawyer review it before launch.</p>
+        <h2>Subscriptions</h2>
+        <p>The Customer Pass ({rupee(PLANS.customer.price)}/month) and Owner Pro ({rupee(PLANS.owner.price)}/month) are monthly subscriptions that renew automatically through UPI AutoPay, card or net-banking mandates.</p>
+        <h2>Cancelling</h2>
+        <p>You can cancel anytime in Account. Cancelling stops the next renewal and cancels the mandate; your plan stays active until the end of the month you already paid for.</p>
+        <h2>Refunds</h2>
+        <p>Fees already paid are not refunded for partial months. If you were charged by mistake (for example a duplicate charge, or a renewal after you cancelled), contact us within 7 days and we will refund the full amount to the original payment method within 7 working days.</p>
+        <h2>Offers and deals</h2>
+        <p>{APP_NAME} does not sell, collect payment for, or deliver any offer listed in the app. Payments for offers are made directly to the business, so refunds for offers must be requested from that business.</p>
+        <h2>Contact</h2>
+        <p>Email <a className="link" href={"mailto:" + SUPPORT_EMAIL}>{SUPPORT_EMAIL}</a> with your registered email and payment details.</p>
+      </div>
+    </>
+  );
+}
+
+export function Contact() {
+  return (
+    <>
+      <div style={{ position: "relative", height: 62 }}><BackButton /></div>
+      <div className="legal">
+        <h1 className="title">Contact us</h1>
+        <p>We usually reply within 2 working days.</p>
+        <h2>Support and grievances</h2>
+        <p>Email: <a className="link" href={"mailto:" + SUPPORT_EMAIL}>{SUPPORT_EMAIL}</a></p>
+        <p className="muted">Add your registered business name, address, phone number and grievance officer here before launch (required for Indian e-commerce rules and payment-gateway KYC).</p>
+        <h2>Report an offer</h2>
+        <p>Open the offer and tap "Report this offer". Our team reviews every report.</p>
+      </div>
+    </>
+  );
+}
+
+// ------------------------------------------------------------------ Admin & moderators
 export function Admin() {
   return <NeedLogin why="Log in as admin"><AdminInner /></NeedLogin>;
 }
 function AdminInner() {
-  const { isAdmin, toast } = useApp();
-  const [tab, setTab] = useState("businesses");
-  if (!isAdmin) return <Empty icon="⛔" title="Admins only">Your account doesn't have admin access.</Empty>;
+  const { isStaff, isAdmin, profile, toast } = useApp();
+  const [tab, setTab] = useState("overview");
+  if (!isStaff) return <Empty icon="⛔" title="Admins only">Your account doesn't have admin access.</Empty>;
+  const tabs = isAdmin
+    ? [["overview", "Overview"], ["businesses", "Businesses"], ["reports", "Reports"], ["users", "Users"], ["plans", "Plans"], ["team", "Team"]]
+    : [["overview", "Overview"], ["businesses", "Businesses"], ["reports", "Reports"]];
   return (
     <>
-      <div className="page-h"><h1 className="title">Admin</h1><div className="muted">Verify businesses, handle reports, manage plans</div></div>
-      <div className="tabs">{[["businesses", "Businesses"], ["reports", "Reports"], ["plans", "Plans"]].map(([id, l]) => <button key={id} className={tab === id ? "on" : ""} onClick={() => setTab(id)}>{l}</button>)}</div>
+      <div className="page-h">
+        <h1 className="title">{isAdmin ? "Admin" : "Moderator"}</h1>
+        <div className="muted">{isAdmin ? "All of India" : `Your regions: ${(profile?.regions || []).join(", ") || "none assigned yet"}`}</div>
+      </div>
+      <div className="chips" style={{ paddingTop: 4 }}>{tabs.map(([id, l]) => <button key={id} className={"chip " + (tab === id ? "on" : "")} onClick={() => setTab(id)}>{l}</button>)}</div>
+      {tab === "overview" && <AdminOverview toast={toast} go={setTab} />}
       {tab === "businesses" && <AdminBusinesses toast={toast} />}
       {tab === "reports" && <AdminReports toast={toast} />}
-      {tab === "plans" && <AdminPlans toast={toast} />}
+      {tab === "users" && isAdmin && <AdminUsers toast={toast} />}
+      {tab === "plans" && isAdmin && <AdminPlans toast={toast} />}
+      {tab === "team" && isAdmin && <AdminTeam toast={toast} />}
+    </>
+  );
+}
+
+function AdminOverview({ toast, go }) {
+  const [data, setData] = useState(null);
+  const [stateFilter, setStateFilter] = useState("");
+  useEffect(() => { api.adminStats().then(setData).catch((e) => { toast(errText(e)); setData({ totals: {}, cities: [] }); }); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!data) return <Spinner />;
+  const t = data.totals;
+  const mrr = (t.customers || 0) * PLANS.customer.price + (t.owners || 0) * PLANS.owner.price;
+  const cities = data.cities.filter((c) => !stateFilter || c.state === stateFilter);
+  const states = [...new Set(data.cities.map((c) => c.state).filter(Boolean))].sort();
+  const Kpi = ({ n, l, onClick }) => <div className="kpi" onClick={onClick} style={onClick ? { cursor: "pointer" } : null}><div className="n">{n ?? "…"}</div><div className="l">{l}</div></div>;
+  return (
+    <>
+      <div className="plan" style={{ padding: 16, marginTop: 4 }}>
+        <div style={{ opacity: .75, fontSize: 13 }}>Monthly recurring revenue (active plans)</div>
+        <div className="amt" style={{ fontSize: 32 }}>{rupee(mrr)}</div>
+        <div style={{ opacity: .75, fontSize: 12.5 }}>{t.customers} Customer Pass × {rupee(PLANS.customer.price)} + {t.owners} Owner Pro × {rupee(PLANS.owner.price)}</div>
+      </div>
+      <div className="kpis">
+        <Kpi n={t.users} l="Registered users" onClick={() => go("users")} />
+        <Kpi n={t.liveOffers} l="Live offers" />
+        <Kpi n={t.verified} l="Verified businesses" onClick={() => go("businesses")} />
+        <Kpi n={t.pending} l="Waiting for verification" onClick={() => go("businesses")} />
+        <Kpi n={t.openReports} l="Open reports" onClick={() => go("reports")} />
+        <Kpi n={t.leads30} l="Numbers shared (30 days)" />
+        <Kpi n={t.suspended} l="Suspended businesses" />
+        <Kpi n={t.archived} l="Archived offers" />
+      </div>
+      <div className="sect"><h3>By city</h3>
+        <select value={stateFilter} onChange={(e) => setStateFilter(e.target.value)} aria-label="Filter by state"><option value="">All states</option>{states.map((s) => <option key={s}>{s}</option>)}</select>
+      </div>
+      {cities.length === 0 ? <div className="muted pad" style={{ paddingTop: 0 }}>No cities yet. Cities appear when businesses there post offers.</div> : (
+        <div className="panel" style={{ padding: 0, overflow: "hidden" }}>
+          <table className="admin">
+            <thead><tr style={{ background: "#f6f7fb", textAlign: "left" }}><th style={{ padding: 10 }}>City</th><th>State</th><th style={{ textAlign: "right" }}>Live offers</th><th style={{ textAlign: "right", paddingRight: 10 }}>Verified businesses</th></tr></thead>
+            <tbody>{cities.map((c) => <tr key={c.key} style={{ borderTop: "1px solid var(--line)" }}><td style={{ padding: 10, fontWeight: 600 }}>{c.name}</td><td className="muted">{c.state}</td><td style={{ textAlign: "right" }}>{c.liveOffers}</td><td style={{ textAlign: "right", paddingRight: 10 }}>{c.verifiedBusinesses ?? "-"}</td></tr>)}</tbody>
+          </table>
+        </div>
+      )}
     </>
   );
 }
 
 function AdminBusinesses({ toast }) {
   const [list, setList] = useState(null);
-  const [filter, setFilter] = useState("pending");
+  const [status, setStatus] = useState("pending");
+  const [state, setState] = useState("");
   const [note, setNote] = useState("");
-  const load = () => api.adminBusinesses().then(setList).catch((e) => { toast(errText(e)); setList([]); });
-  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const act = async (b, status) => {
-    try { await api.setBusinessStatus(b.id, status, status === "verified" ? "" : note.trim()); toast(`${b.name}: ${status}`); setNote(""); load(); } catch (e) { toast(errText(e)); }
+  const load = () => { setList(null); api.adminBusinesses({ status: status === "all" ? null : status, state: state || null }).then(setList).catch((e) => { toast(errText(e)); setList([]); }); };
+  useEffect(() => { load(); }, [status, state]); // eslint-disable-line react-hooks/exhaustive-deps
+  const act = async (b, st) => {
+    try { await api.setBusinessStatus(b.id, st, st === "verified" ? "" : note.trim()); toast(`${b.name}: ${st}`); setNote(""); load(); } catch (e) { toast(errText(e)); }
   };
-  const shown = (list || []).filter((b) => filter === "all" || b.status === filter);
   return (
     <>
-      <div className="chips" style={{ paddingTop: 0 }}>{["pending", "verified", "rejected", "suspended", "all"].map((s) => <button key={s} className={"chip " + (filter === s ? "on" : "")} onClick={() => setFilter(s)}>{s}</button>)}</div>
-      <div className="form" style={{ paddingBottom: 8 }}><div className="fld"><label>Note to owner (used when you reject or suspend)</label><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Phone number didn't answer" /></div></div>
-      {!list ? <Spinner /> : shown.length === 0 ? <Empty icon="✅" title="Nothing here" /> : shown.map((b) => (
+      <div className="chips" style={{ paddingTop: 0 }}>{["pending", "verified", "rejected", "suspended", "all"].map((s) => <button key={s} className={"chip " + (status === s ? "on" : "")} onClick={() => setStatus(s)}>{s}</button>)}</div>
+      <div className="form" style={{ paddingBottom: 8 }}>
+        <div className="fld"><select value={state} onChange={(e) => setState(e.target.value)} aria-label="State"><option value="">All states</option>{INDIAN_STATES.map((s) => <option key={s}>{s}</option>)}</select></div>
+        <div className="fld"><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note to owner when rejecting or suspending" /></div>
+      </div>
+      {!list ? <Spinner /> : list.length === 0 ? <Empty icon="✅" title="Nothing here" /> : list.map((b) => (
         <div className="panel" key={b.id}>
           <div className="row"><b>{b.name}</b><span className={"pill " + (b.status === "verified" ? "p-ok" : b.status === "pending" ? "p-warn" : "p-bad")}>{b.status}</span></div>
-          <div className="muted small">{b.category} · {b.address || "-"}, {b.area}, {b.city}</div>
-          <div className="muted small">📞 {b.phone || "no number"} · {b.lat != null ? "📍 location set" : "no map location"}</div>
+          <div className="muted small">{b.category} · {b.address || "-"}, {b.area}, {b.city}, {b.state || "state missing"}</div>
+          <div className="muted small">📞 {b.phone ? prettyPhone(b.phone) : "no number"} · {b.lat != null ? "📍 location set" : "no map location"}{b.createdAt ? " · joined " + ago(b.createdAt) : ""}</div>
+          {b.flags?.length > 0 && <div className="gap" style={{ flexWrap: "wrap", marginTop: 6 }}>{b.flags.map((f) => <span key={f} className="pill p-bad">⚠️ {f}</span>)}</div>}
           {b.statusNote && <div className="muted small">Note: {b.statusNote}</div>}
           <div className="gap" style={{ marginTop: 10, flexWrap: "wrap" }}>
+            {b.phone && <a className="btn ghost sm" href={"tel:" + b.phone}>📞 Call to verify</a>}
             {b.status !== "verified" && <button className="btn main sm" onClick={() => act(b, "verified")}>Verify</button>}
             {b.status === "pending" && <button className="btn ghost sm" onClick={() => act(b, "rejected")}>Reject</button>}
             {b.status === "verified" && <button className="btn danger sm" onClick={() => act(b, "suspended")}>Suspend</button>}
@@ -252,24 +351,48 @@ function AdminReports({ toast }) {
   const load = () => api.adminReports().then(setList).catch((e) => { toast(errText(e)); setList([]); });
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const resolve = async (r, status, removeOffer) => {
-    try {
-      if (removeOffer && r.offer) await api.adminRemoveOffer(r.offer.id);
-      await api.resolveReport(r.id, status);
-      toast(removeOffer ? "Offer removed" : "Report " + status); load();
-    } catch (e) { toast(errText(e)); }
+    try { await api.resolveReport(r.id, status, removeOffer); toast(removeOffer ? "Offer removed" : "Report " + status); load(); } catch (e) { toast(errText(e)); }
   };
-  const open = (list || []).filter((r) => r.status === "open");
-  return !list ? <Spinner /> : open.length === 0 ? <Empty icon="🎉" title="No open reports" /> : open.map((r) => (
+  return !list ? <Spinner /> : list.length === 0 ? <Empty icon="🎉" title="No open reports" /> : list.map((r) => (
     <div className="panel" key={r.id}>
-      <div className="row"><b>{r.reason}</b><span className="muted small">{day(r.createdAt)}</span></div>
+      <div className="row"><b>{r.reason}</b><span className="muted small">{r.createdAt ? ago(r.createdAt) : ""}</span></div>
+      <div className="muted small">{[r.city, r.state].filter(Boolean).join(", ")}</div>
       {r.details && <div className="muted small" style={{ marginTop: 4 }}>{r.details}</div>}
-      <div className="box small" style={{ marginTop: 8 }}>{r.offer ? <><a className="link" href={"#/offer/" + r.offer.id}>{r.offer.title}</a> · {r.offer.business?.name} · {r.offer.status}</> : "Offer deleted"}</div>
+      <div className="box small" style={{ marginTop: 8 }}>{r.offer ? <><a className="link" href={"#/offer/" + r.offer.id}>{r.offer.title}</a> · {r.offer.business?.name} · {r.offer.status}</> : "Offer already archived"}</div>
       <div className="gap" style={{ marginTop: 10, flexWrap: "wrap" }}>
         {r.offer && r.offer.status !== "removed" && <button className="btn danger sm" onClick={() => resolve(r, "actioned", true)}>Remove offer</button>}
-        <button className="btn ghost sm" onClick={() => resolve(r, "dismissed")}>Dismiss</button>
+        <button className="btn ghost sm" onClick={() => resolve(r, "dismissed", false)}>Dismiss</button>
       </div>
     </div>
   ));
+}
+
+function AdminUsers({ toast }) {
+  const [q, setQ] = useState("");
+  const [list, setList] = useState(null);
+  const search = (term) => { setList(null); api.adminFindUsers(term).then(setList).catch((e) => { toast(errText(e)); setList([]); }); };
+  useEffect(() => { search(""); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const plan = (s) => !s ? <span className="pill p-mute">none</span> : s.active ? <span className="pill p-ok">till {day(s.until)}</span> : <span className="pill p-bad">{s.status}</span>;
+  return (
+    <>
+      <form className="form" style={{ paddingBottom: 8 }} onSubmit={(e) => { e.preventDefault(); search(q.trim()); }}>
+        <div className="gap"><input style={{ flex: 1, border: "1px solid var(--line)", borderRadius: 12, padding: "11px 12px" }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Email, phone number or name" aria-label="Search users" />
+          <button className="btn dark sm">Search</button></div>
+        <div className="muted small">Leave empty to see the newest 50 sign-ups.</div>
+      </form>
+      {!list ? <Spinner /> : list.length === 0 ? <Empty icon="🔍" title="No users found" /> : list.map((u) => (
+        <div className="panel" key={u.id}>
+          <div className="row"><b>{u.name || "(no name)"}</b>{u.role !== "user" && <span className="pill p-new">{u.role}</span>}</div>
+          <div className="muted small">{u.email} · {u.phone ? prettyPhone(u.phone) : "no phone"}{u.createdAt ? " · joined " + day(u.createdAt) : ""}</div>
+          <div className="gap" style={{ marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <span className="small">Customer Pass:</span> {plan(u.customer)}
+            <span className="small">Owner Pro:</span> {plan(u.owner)}
+          </div>
+          {u.business && <div className="muted small" style={{ marginTop: 6 }}>🏪 {u.business.name} · {u.business.city}, {u.business.state} · {u.business.status}</div>}
+        </div>
+      ))}
+    </>
+  );
 }
 
 function AdminPlans({ toast }) {
@@ -283,13 +406,41 @@ function AdminPlans({ toast }) {
   };
   return (
     <div className="form">
-      <div className="muted">Activate or extend a plan manually, e.g. when someone paid outside the app. Set months to 0 to end a plan.</div>
+      <div className="muted">Activate or extend a plan manually, e.g. for testers or when someone paid outside the app. Set months to 0 to end a plan.</div>
       <div className="fld"><label>User's email</label><input type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></div>
       <div className="two">
         <div className="fld"><label>Plan</label><select value={f.plan} onChange={(e) => setF({ ...f, plan: e.target.value })}><option value="customer">{PLANS.customer.name}</option><option value="owner">{PLANS.owner.name}</option></select></div>
         <div className="fld"><label>Months</label><input type="number" min="0" max="24" value={f.months} onChange={(e) => setF({ ...f, months: e.target.value })} /></div>
       </div>
       <button className="btn dark" disabled={busy || !f.email} onClick={submit}>{busy ? "Saving…" : "Apply"}</button>
+    </div>
+  );
+}
+
+function AdminTeam({ toast }) {
+  const [f, setF] = useState({ email: "", role: "moderator", regions: [] });
+  const [busy, setBusy] = useState(false);
+  const toggle = (st) => setF((p) => ({ ...p, regions: p.regions.includes(st) ? p.regions.filter((x) => x !== st) : [...p.regions, st] }));
+  const submit = async () => {
+    if (f.role === "moderator" && f.regions.length === 0) return toast("Pick at least one state for the moderator");
+    setBusy(true);
+    try { await api.adminSetRole(f.email.trim(), f.role, f.regions); toast(`Saved: ${f.email} is now ${f.role}`); setF({ email: "", role: "moderator", regions: [] }); }
+    catch (e) { toast(errText(e)); }
+    setBusy(false);
+  };
+  return (
+    <div className="form">
+      <div className="muted">Moderators can verify businesses and handle reports only in the states you give them. Admins see all of India. The person must have signed up first.</div>
+      <div className="fld"><label>Email</label><input type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></div>
+      <div className="fld"><label>Role</label>
+        <select value={f.role} onChange={(e) => setF({ ...f, role: e.target.value })}>
+          <option value="moderator">Moderator (selected states)</option><option value="admin">Admin (all of India)</option><option value="user">Normal user (remove access)</option>
+        </select></div>
+      {f.role === "moderator" && (
+        <div className="fld"><label>States ({f.regions.length} selected)</label>
+          <div className="emoji-pick" style={{ gap: 6 }}>{INDIAN_STATES.map((st) => <button type="button" key={st} className={"chip " + (f.regions.includes(st) ? "on" : "")} onClick={() => toggle(st)}>{st}</button>)}</div></div>
+      )}
+      <button className="btn dark" disabled={busy || !f.email} onClick={submit}>{busy ? "Saving…" : "Save role"}</button>
     </div>
   );
 }

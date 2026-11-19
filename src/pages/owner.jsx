@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/index.js";
 import { Empty, NeedLogin, OfferCard, PlanCard, Sheet, Spinner, Toggle } from "../components.jsx";
-import { APP_NAME, CATEGORIES, DURATIONS, EMOJIS, IS_OWNER_APP, PLANS, TEMPLATES, TINTS } from "../lib/config.js";
-import { ago, day, errText, rupee, telLink, timeLeft, validPhone, waLink } from "../lib/format.js";
+import { APP_NAME, CATEGORIES, DURATIONS, EMOJIS, INDIAN_STATES, IS_OWNER_APP, MAJOR_CITIES, PLANS, RETENTION, TEMPLATES, TINTS } from "../lib/config.js";
+import { ago, day, errText, prettyPhone, rupee, telLink, timeLeft, validPhone, waLink } from "../lib/format.js";
 import { navigate, useApp, useNow } from "../state.jsx";
 
 // Every owner page goes through this gate: login -> business profile -> Owner Pro -> page.
@@ -95,7 +95,7 @@ function LeadRow({ lead, onChange }) {
       <div className="grow">
         <div className="gap" style={{ alignItems: "center", gap: 6 }}><b style={{ fontSize: 14 }}>{lead.name}</b>
           {lead.status === "new" ? <span className="pill p-new">New</span> : lead.status === "contacted" ? <span className="pill p-mute">Contacted</span> : <span className="pill p-ok">Closed</span>}</div>
-        <div className="muted small">{lead.phone}</div>
+        <div className="muted small">{prettyPhone(lead.phone)}</div>
         <div className="muted small ellipsis">{lead.offerEmoji} {lead.offerTitle} · {ago(lead.createdAt)}</div>
       </div>
       <a className="icon-btn" aria-label="Call" href={telLink(lead.phone)} onClick={mark}>📞</a>
@@ -127,10 +127,13 @@ export function OwnerLeads() {
 export function OwnerOffers() {
   const { toast } = useApp();
   const [offers, setOffers] = useState(null);
+  const [history, setHistory] = useState(null);
+  const [tab, setTab] = useState("current");
   const [ending, setEnding] = useState(null);
   const now = useNow(30000);
   const load = () => api.myOffers().then(setOffers).catch(() => setOffers([]));
   useEffect(() => { load(); }, []);
+  useEffect(() => { if (tab === "history" && !history) api.myArchive().then(setHistory).catch(() => setHistory([])); }, [tab, history]);
   const end = async () => {
     try { await api.endOffer(ending.id); toast("Offer ended"); load(); } catch (e) { toast(errText(e)); }
     setEnding(null);
@@ -139,7 +142,20 @@ export function OwnerOffers() {
     <>
       <div className="page-h row"><div><h1 className="title">My offers</h1><div className="muted">Views and status of everything you posted</div></div><a className="btn main sm" href="#/owner/post">＋ New</a></div>
       <StatusBanner />
-      {!offers ? <Spinner /> : offers.length === 0 ? <Empty icon="🗂️" title="No offers yet" action={<a className="btn main" href="#/owner/post">Post your first offer</a>}>Anything you need to move: rooms, seats, halls, slots, stock…</Empty>
+      <div className="tabs"><button className={tab === "current" ? "on" : ""} onClick={() => setTab("current")}>Current</button><button className={tab === "history" ? "on" : ""} onClick={() => setTab("history")}>History</button></div>
+      {tab === "history" ? (
+        <>
+          <div className="muted small pad" style={{ paddingTop: 0 }}>Offers move here {RETENTION.endedOfferVisibleDays} days after they end and are kept for {Math.round(RETENTION.archiveDays / 30)} months.</div>
+          {!history ? <Spinner /> : history.length === 0 ? <Empty icon="🗄️" title="No history yet">Ended offers appear here.</Empty> : history.map((h) => (
+            <div className="item" key={h.id}>
+              <div className="ic" style={{ background: TINTS[h.category] || TINTS.other }}>{h.emoji}</div>
+              <div className="grow"><b style={{ fontSize: 14 }}>{h.title}</b>
+                <div className="muted small">{rupee(h.price)} <s>{rupee(h.origPrice)}</s> · {h.views} views · {h.leads} leads</div>
+                <div className="muted small">Ended {day(h.endsAt)}</div></div>
+            </div>
+          ))}
+        </>
+      ) : !offers ? <Spinner /> : offers.length === 0 ? <Empty icon="🗂️" title="No offers yet" action={<a className="btn main" href="#/owner/post">Post your first offer</a>}>Anything you need to move: rooms, seats, halls, slots, stock…</Empty>
         : offers.map((o) => {
           const live = o.status === "live" && o.endsAt > now;
           const label = live ? (o.visible === false ? "Waiting" : "Live") : o.status === "removed" ? "Removed" : "Ended";
@@ -171,7 +187,7 @@ export function OwnerOffers() {
 export function PostOffer() {
   const { business, toast } = useApp();
   const [f, setF] = useState({ category: business?.category || "other", emoji: "📦", title: "", description: "", origPrice: "", price: "", quantity: "", hours: 6 });
-  const [photo, setPhoto] = useState(null); // { file, url }
+  const [photo, setPhoto] = useState(null); // { file, url } (compressed when posting)
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const fileRef = useRef();
@@ -195,7 +211,7 @@ export function PostOffer() {
   const onPhoto = (file) => {
     if (!file) return;
     if (!file.type.startsWith("image/")) return toast("Please choose a photo");
-    if (file.size > 5 * 1024 * 1024) return toast("Photo must be under 5 MB");
+    if (file.size > 15 * 1024 * 1024) return toast("Photo must be under 15 MB");
     setPhoto({ file, url: URL.createObjectURL(file) });
   };
 
@@ -203,9 +219,10 @@ export function PostOffer() {
     if (problems.length) return;
     setBusy(true); setErr("");
     try {
-      const photoUrl = photo ? await api.uploadPhoto(photo.file) : null;
+      const pics = photo ? await api.uploadPhoto(photo.file) : null;
       await api.createOffer({
-        title: f.title.trim(), description: f.description.trim(), category: f.category, emoji: f.emoji, photoUrl,
+        title: f.title.trim(), description: f.description.trim(), category: f.category, emoji: f.emoji,
+        photoThumb: pics?.thumb || null, photo: pics?.photo || null,
         origPrice: orig, price, quantity: f.quantity.trim(), endsAt: Date.now() + f.hours * 3600000,
       });
       toast(business.status === "verified" ? "Your offer is live 🎉" : "Offer saved. It goes live once your business is verified.");
@@ -217,6 +234,7 @@ export function PostOffer() {
     <>
       <div className="page-h"><h1 className="title">Post an offer</h1><div className="muted">Anything you need to move before it becomes a loss</div></div>
       <StatusBanner />
+      {(!business.state || !business.city) && <a className="banner warn" href="#/owner/business">📍 Add your city and state in Business profile before posting. Customers find offers by city.</a>}
       <div className="chips">{TEMPLATES.map((t) => <button key={t.label} className="chip" onClick={() => useTemplate(t)}>{t.emoji} {t.label}</button>)}</div>
       <div className="form">
         <div className="fld"><label>Photo (optional)</label>
@@ -241,7 +259,7 @@ export function PostOffer() {
               {DURATIONS.map((h) => <option key={h} value={h}>{h < 24 ? `${h} hour${h > 1 ? "s" : ""}` : `${h / 24} day${h > 24 ? "s" : ""}`}</option>)}
             </select></div>
         </div>
-        <div className="muted small">Customers will contact you on <b>{business.phone}</b>. <a className="link" href="#/owner/business">Change</a></div>
+        <div className="muted small">Customers will contact you on <b>{prettyPhone(business.phone)}</b> ({business.city}). <a className="link" href="#/owner/business">Change</a></div>
       </div>
       <div className="label-up">How customers see it</div>
       <div style={{ paddingTop: 8 }}><OfferCard offer={preview} preview /></div>
@@ -264,7 +282,7 @@ function BusinessForm({ first = false }) {
   const { business, profile, refresh, toast } = useApp();
   const [f, setF] = useState(() => ({
     name: business?.name || "", category: business?.category || "food", about: business?.about || "", address: business?.address || "",
-    area: business?.area || "", city: business?.city || "", lat: business?.lat ?? null, lng: business?.lng ?? null,
+    area: business?.area || "", city: business?.city || "", state: business?.state || "", lat: business?.lat ?? null, lng: business?.lng ?? null,
     phone: business?.phone || profile?.phone || "", whatsapp: business?.whatsapp ?? true, agree: !first,
   }));
   const [busy, setBusy] = useState(false);
@@ -285,14 +303,16 @@ function BusinessForm({ first = false }) {
   if (f.name.trim().length < 2) missing.push("business name");
   if (!f.area.trim()) missing.push("area");
   if (!f.city.trim()) missing.push("city");
-  if (!validPhone(f.phone)) missing.push("a valid contact number");
+  if (!f.state) missing.push("state");
+  if (!validPhone(f.phone)) missing.push("a valid Indian contact number");
   if (!f.agree) missing.push("agreement to the owner terms");
 
   const save = async () => {
     if (missing.length) return;
     setBusy(true);
     try {
-      await api.saveBusiness({ ...business, ...f, name: f.name.trim(), area: f.area.trim(), city: f.city.trim(), phone: f.phone.trim() });
+      const city = f.city.trim().replace(/\s+/g, " ").replace(/\b\w/g, (ch) => ch.toUpperCase());
+      await api.saveBusiness({ ...business, ...f, name: f.name.trim(), area: f.area.trim(), city, phone: f.phone.trim() });
       await refresh();
       toast(first ? "Business created. Next: choose your plan." : "Business details saved");
       if (!first) navigate("/owner");
@@ -309,14 +329,19 @@ function BusinessForm({ first = false }) {
         <div className="fld"><label>Business name</label><input maxLength={120} value={f.name} onChange={(e) => set("name", e.target.value)} placeholder="e.g. Sunrise Bakery" /></div>
         <div className="fld"><label>Main category</label>
           <select value={f.category} onChange={(e) => set("category", e.target.value)}>{CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.icon} {c.label}</option>)}</select></div>
-        <div className="fld"><label>Contact number for customers</label><input inputMode="tel" value={f.phone} onChange={(e) => set("phone", e.target.value)} placeholder="10-digit mobile number" />
+        <div className="fld"><label>Contact number for customers</label><input inputMode="tel" value={f.phone} onChange={(e) => set("phone", e.target.value)} placeholder="10-digit Indian mobile or landline with STD code" />
           <span className="hint">Only customers with the Customer Pass can see this number.</span></div>
         <Toggle on={f.whatsapp} onChange={(v) => set("whatsapp", v)} title="Customers can WhatsApp this number" />
         <div className="fld"><label>Address</label><input value={f.address} onChange={(e) => set("address", e.target.value)} placeholder="Shop number, street" /></div>
         <div className="two">
           <div className="fld"><label>Area</label><input value={f.area} onChange={(e) => set("area", e.target.value)} placeholder="e.g. Indiranagar" /></div>
-          <div className="fld"><label>City</label><input value={f.city} onChange={(e) => set("city", e.target.value)} placeholder="e.g. Bengaluru" /></div>
+          <div className="fld"><label>City</label><input list="lp-cities" value={f.city} placeholder="e.g. Bengaluru"
+            onChange={(e) => { const v = e.target.value; const m = MAJOR_CITIES.find((c) => c.name.toLowerCase() === v.trim().toLowerCase()); setF((p) => ({ ...p, city: v, state: m ? m.state : p.state })); }} />
+            <datalist id="lp-cities">{MAJOR_CITIES.map((c) => <option key={c.name} value={c.name} />)}</datalist></div>
         </div>
+        <div className="fld"><label>State</label>
+          <select value={f.state} onChange={(e) => set("state", e.target.value)}><option value="">Select state</option>{INDIAN_STATES.map((s) => <option key={s}>{s}</option>)}</select>
+          <span className="hint">LastPick is available for businesses in India.</span></div>
         <div className="toggle">
           <div><b style={{ fontSize: 14 }}>Map location</b><div className="muted small">{f.lat != null ? `Saved (${Number(f.lat).toFixed(4)}, ${Number(f.lng).toFixed(4)})` : "Shows your offers on the map and sorts them by distance"}</div></div>
           <button className="btn ghost sm" type="button" disabled={locating} onClick={locate}>{locating ? "Locating…" : "📍 Use my location"}</button>

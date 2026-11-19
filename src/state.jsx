@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { api } from "./api/index.js";
-import { DEFAULT_LOCATION } from "./lib/config.js";
+import { DEFAULT_LOCATION, MAJOR_CITIES, cityKey } from "./lib/config.js";
+import { distanceKm } from "./lib/format.js";
 
 // ---------------- tiny hash router ----------------
 const readHash = () => {
@@ -45,12 +46,22 @@ const Ctx = createContext(null);
 export const useApp = () => useContext(Ctx);
 
 const readMode = () => { try { return localStorage.getItem("lastpick-mode") || "customer"; } catch { return "customer"; } };
+const readCity = () => { try { return JSON.parse(localStorage.getItem("lastpick-city") || "null"); } catch { return null; } };
+export const nearestCity = (pos, cities = MAJOR_CITIES) => {
+  let best = null, bestKm = Infinity;
+  cities.filter((c) => c.lat != null).forEach((c) => { const km = distanceKm(pos, c); if (km < bestKm) { best = c; bestKm = km; } });
+  return best ? { key: c2k(best), name: best.name, state: best.state, lat: best.lat, lng: best.lng } : null;
+};
+const c2k = (c) => c.key || cityKey(c.name);
 
 export function AppProvider({ children }) {
   const [state, setState] = useState({ loading: true, session: null, profile: null, subs: { customer: null, owner: null }, business: null });
   const [mode, setModeState] = useState(readMode);
   const [toastMsg, setToastMsg] = useState("");
   const [location, setLocation] = useState({ ...DEFAULT_LOCATION, exact: false });
+  const stored = readCity();
+  const [city, setCityState] = useState(stored || { key: cityKey(DEFAULT_LOCATION.label), name: DEFAULT_LOCATION.label, state: "Karnataka", lat: DEFAULT_LOCATION.lat, lng: DEFAULT_LOCATION.lng, auto: true });
+  const setCity = (c) => { setCityState(c); try { localStorage.setItem("lastpick-city", JSON.stringify(c)); } catch { /* ignore */ } };
 
   const refresh = useCallback(async () => {
     try {
@@ -69,7 +80,12 @@ export function AppProvider({ children }) {
   useEffect(() => {
     if (typeof navigator === "undefined" || !navigator.geolocation) return;
     navigator.geolocation.getCurrentPosition(
-      (p) => setLocation({ lat: p.coords.latitude, lng: p.coords.longitude, label: "Your location", exact: true }),
+      (p) => {
+        const pos = { lat: p.coords.latitude, lng: p.coords.longitude };
+        setLocation({ ...pos, label: "Your location", exact: true });
+        // first visit: pick the nearest big city automatically (the user can change it)
+        setCityState((c) => (c?.auto ? { ...(nearestCity(pos) || c), auto: true } : c));
+      },
       () => {}, { maximumAge: 600000, timeout: 8000 },
     );
   }, []);
@@ -79,10 +95,11 @@ export function AppProvider({ children }) {
   const setMode = (m) => { setModeState(m); try { localStorage.setItem("lastpick-mode", m); } catch { /* ignore */ } };
 
   const value = {
-    ...state, refresh, mode, setMode, location, toast: setToastMsg,
+    ...state, refresh, mode, setMode, location, city, setCity, toast: setToastMsg,
     isCustomer: !!state.subs.customer?.active,
     isOwner: !!state.subs.owner?.active,
-    isAdmin: state.profile?.role === "admin",
+    isAdmin: state.profile?.role === "admin", // super admin: all of India
+    isStaff: ["admin", "moderator"].includes(state.profile?.role), // admin or city/state moderator
   };
   return (
     <Ctx.Provider value={value}>

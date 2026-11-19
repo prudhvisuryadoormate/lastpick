@@ -33,11 +33,18 @@ export function distanceKm(a, b) {
 export const kmText = (km) => (km == null ? "" : km < 1 ? Math.round(km * 1000) + " m" : km.toFixed(1) + " km");
 
 export const digits = (p) => String(p || "").replace(/\D/g, "");
-export const telLink = (p) => "tel:+" + (digits(p).length === 10 ? "91" + digits(p) : digits(p));
-export const waLink = (p, text) => {
-  const d = digits(p);
-  return `https://wa.me/${d.length === 10 ? "91" + d : d}?text=${encodeURIComponent(text)}`;
-};
-export const validPhone = (p) => digits(p).length >= 10 && digits(p).length <= 13;
+export const telLink = (p) => "tel:" + (indianPhone(p) || "+" + digits(p));
+export const waLink = (p, text) => `https://wa.me/${(indianPhone(p) || digits(p)).replace("+", "")}?text=${encodeURIComponent(text)}`;
+// Indian numbers only. Mobile: 10 digits starting 6-9 (optional +91 / 0 prefix). Landline: 0 + STD code + number (11 digits).
+export function indianPhone(p) {
+  let d = digits(p);
+  if (d.length === 12 && d.startsWith("91")) d = d.slice(2);
+  if (d.length === 11 && d.startsWith("0") && /^[6-9]/.test(d[1])) d = d.slice(1);
+  if (/^[6-9]\d{9}$/.test(d)) return "+91" + d;
+  if (/^0[1-9]\d{9}$/.test(d)) return "+91" + d.slice(1);
+  return null;
+}
+export const validPhone = (p) => indianPhone(p) !== null;
+export const prettyPhone = (p) => { const n = indianPhone(p); return n ? `+91 ${n.slice(3, 8)} ${n.slice(8)}` : String(p || ""); };
 
 export const errText = (e) => (e && (e.message || e.error_description || e.error)) || String(e);
