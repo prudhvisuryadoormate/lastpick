@@ -1,5 +1,7 @@
 // Demo backend: same interface as supabase.js, data kept in this browser's localStorage.
 // Used automatically when VITE_SUPABASE_URL is not set. No real payments happen here.
+import { compressPhoto } from "../lib/image.js";
+
 const KEY = "lastpick-demo-v2";
 const H = 3600000, D = 86400000;
 const rid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
@@ -176,21 +178,7 @@ export const api = {
   },
   async endOffer(id) { const db = load(); const o = db.offers.find((x) => x.id === id); if (o && o.status === "live") o.status = "ended"; save(db); },
   async addView(id) { const db = load(); const o = db.offers.find((x) => x.id === id); if (o) { o.views += 1; save(db); } },
-  async uploadPhoto(file) {
-    // shrink to keep localStorage small
-    const dataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
-    return await new Promise((res) => {
-      const img = new Image();
-      img.onload = () => {
-        const s = Math.min(1, 900 / Math.max(img.width, img.height));
-        const c = document.createElement("canvas"); c.width = img.width * s; c.height = img.height * s;
-        c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
-        res(c.toDataURL("image/jpeg", 0.75));
-      };
-      img.onerror = () => res(dataUrl);
-      img.src = dataUrl;
-    });
-  },
+  async uploadPhoto(file) { return compressPhoto(file); },
 
   async revealContact(offerId) {
     await wait(120);

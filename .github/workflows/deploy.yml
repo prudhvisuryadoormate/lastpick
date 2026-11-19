@@ -1,6 +1,7 @@
 name: Deploy to Firebase
 
-# Every push to main builds the web app and deploys hosting, Firestore/Storage rules and Cloud Functions.
+# Every push to main builds the web app and deploys ONLY LastPick's parts: its hosting site,
+# its Firestore database ("lastpick") and its functions codebase ("lastpick"). Other apps in the project are untouched.
 # Runs only after these are added in GitHub -> Settings -> Secrets and variables -> Actions:
 #   Secret   FIREBASE_SERVICE_ACCOUNT   (full JSON of a Firebase service-account key)
 #   Variable FIREBASE_PROJECT_ID        (laundry-staging-c0722)
@@ -33,6 +34,6 @@ jobs:
         run: |
           printf '%s' "$SERVICE_ACCOUNT" > "$RUNNER_TEMP/sa.json"
           export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/sa.json"
-          npx --yes firebase-tools@13 deploy --project "${{ vars.FIREBASE_PROJECT_ID }}" --non-interactive --force
+          npx --yes firebase-tools@13 deploy --only hosting,firestore,functions:lastpick --project "${{ vars.FIREBASE_PROJECT_ID }}" --non-interactive
         env:
           SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
