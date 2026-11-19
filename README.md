@@ -39,7 +39,7 @@ To use your real Firebase project, copy `.env.example` to `.env` and fill in the
 
 1. In the [Firebase console](https://console.firebase.google.com), create a project **lastpick** and switch it to the **Blaze** plan.
 2. Enable **Authentication → Email/Password**, **Firestore** (location `asia-south1`, production mode) and **Storage**.
-3. **Project settings → Your apps → Add app → Web.** Copy the config into `.env` (local) or GitHub variables (auto-deploy).
+3. **Project settings → Your apps → Add app → Web.** The config is already in `.env.production`. Live site: https://lastpick-ce569.web.app
 4. Set your project id in `.firebaserc` (currently `laundry-staging-c0722`).
 5. Create the payment secrets once. Use the word `unset` until Razorpay is ready:
    ```bash
@@ -58,7 +58,7 @@ To use your real Firebase project, copy `.env.example` to `.env` and fill in the
 
 In the repo's **Settings → Secrets and variables → Actions**, add:
 - Secret `FIREBASE_SERVICE_ACCOUNT`: the JSON from **Project settings → Service accounts → Generate new private key**.
-- Variables `FIREBASE_PROJECT_ID`, `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_STORAGE_BUCKET`, `VITE_FIREBASE_MESSAGING_SENDER_ID`, `VITE_FIREBASE_APP_ID`.
+- Variable `FIREBASE_PROJECT_ID` = `laundry-staging-c0722`. (The web config is already in `.env.production`.)
 
 After that, every push to `main` deploys automatically. Step 5 above still has to be done once.
 
