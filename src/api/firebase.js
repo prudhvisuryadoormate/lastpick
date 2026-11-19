@@ -145,10 +145,14 @@ export const api = {
     const auth = F().auth;
     // a fresh invisible reCAPTCHA for every send, so "Resend code" works too
     try { this._recaptcha?.clear(); } catch { /* ignore */ }
-    const box = document.getElementById("otp-captcha");
-    if (box) box.innerHTML = "";
+    // reCAPTCHA remembers every element it has used, so give it a brand-new one each time
+    let box = document.getElementById("otp-captcha");
+    if (!box) { box = document.createElement("div"); box.id = "otp-captcha"; document.body.appendChild(box); }
+    box.innerHTML = "";
+    const holder = document.createElement("div");
+    box.appendChild(holder);
     try {
-      this._recaptcha = new RecaptchaVerifier(auth, "otp-captcha", { size: "invisible" });
+      this._recaptcha = new RecaptchaVerifier(auth, holder, { size: "invisible" });
       this._confirm = await signInWithPhoneNumber(auth, indianPhone(phone), this._recaptcha);
     } catch (e) { try { this._recaptcha?.clear(); } catch { /* ignore */ } this._recaptcha = null; throw nice(e); }
   },

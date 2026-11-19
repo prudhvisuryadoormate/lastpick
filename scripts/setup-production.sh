@@ -66,6 +66,9 @@ echo "== 6. Uptime check on the web app"
 gcloud monitoring uptime list-configs --format="value(displayName)" | grep -q "LastPick web" || \
   gcloud monitoring uptime create "LastPick web" --resource-type=uptime-url --resource-labels=host=lastpick-ce569.web.app,project_id="$PROJECT" --path="/" --period=15 || true
 
+echo "== 7. Let the app call the LastPick functions"
+bash "$(dirname "$0")/make-callable.sh"
+
 cat <<MSG
 
 Done. Two things need the Console (they can't be scripted safely here):
