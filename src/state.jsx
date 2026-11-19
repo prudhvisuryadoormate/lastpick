@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useState } from "rea
 import { api } from "./api/index.js";
 import { DEFAULT_LOCATION, MAJOR_CITIES, cityKey } from "./lib/config.js";
 import { distanceKm } from "./lib/format.js";
+import { DEFAULT_RADIUS_KM } from "./lib/geo.js";
 
 // ---------------- tiny hash router ----------------
 const readHash = () => {
@@ -46,6 +47,7 @@ const Ctx = createContext(null);
 export const useApp = () => useContext(Ctx);
 
 const readMode = () => { try { return localStorage.getItem("lastpick-mode") || "customer"; } catch { return "customer"; } };
+const readArea = () => { try { return JSON.parse(localStorage.getItem("lastpick-area") || "null"); } catch { return null; } };
 const readCity = () => { try { return JSON.parse(localStorage.getItem("lastpick-city") || "null"); } catch { return null; } };
 export const nearestCity = (pos, cities = MAJOR_CITIES) => {
   let best = null, bestKm = Infinity;
@@ -62,6 +64,12 @@ export function AppProvider({ children }) {
   const stored = readCity();
   const [city, setCityState] = useState(stored || { key: cityKey(DEFAULT_LOCATION.label), name: DEFAULT_LOCATION.label, state: "Karnataka", lat: DEFAULT_LOCATION.lat, lng: DEFAULT_LOCATION.lng, auto: true });
   const setCity = (c) => { setCityState(c); try { localStorage.setItem("lastpick-city", JSON.stringify(c)); } catch { /* ignore */ } };
+  // Where the customer is looking: { mode: "near", radius } | { mode: "pincode", pincode } | { mode: "city" }
+  const [area, setAreaState] = useState(() => readArea() || { mode: "near", radius: DEFAULT_RADIUS_KM });
+  const setArea = (a) => { setAreaState(a); try { localStorage.setItem("lastpick-area", JSON.stringify(a)); } catch { /* ignore */ } };
+  const [locationStatus, setLocationStatus] = useState("asking"); // asking | granted | denied | unavailable
+  const [config, setConfig] = useState({ freeMode: true });
+  useEffect(() => { api.getConfig().then(setConfig).catch(() => {}); }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -78,15 +86,16 @@ export function AppProvider({ children }) {
   useEffect(() => { refresh(); return api.onAuthChange(refresh); }, [refresh]);
 
   useEffect(() => {
-    if (typeof navigator === "undefined" || !navigator.geolocation) return;
+    if (typeof navigator === "undefined" || !navigator.geolocation) { setLocationStatus("unavailable"); return; }
     navigator.geolocation.getCurrentPosition(
       (p) => {
         const pos = { lat: p.coords.latitude, lng: p.coords.longitude };
         setLocation({ ...pos, label: "Your location", exact: true });
+        setLocationStatus("granted");
         // first visit: pick the nearest big city automatically (the user can change it)
         setCityState((c) => (c?.auto ? { ...(nearestCity(pos) || c), auto: true } : c));
       },
-      () => {}, { maximumAge: 600000, timeout: 8000 },
+      () => setLocationStatus("denied"), { maximumAge: 600000, timeout: 10000 },
     );
   }, []);
 
@@ -95,9 +104,11 @@ export function AppProvider({ children }) {
   const setMode = (m) => { setModeState(m); try { localStorage.setItem("lastpick-mode", m); } catch { /* ignore */ } };
 
   const value = {
-    ...state, refresh, mode, setMode, location, city, setCity, toast: setToastMsg,
-    isCustomer: !!state.subs.customer?.active,
-    isOwner: !!state.subs.owner?.active,
+    ...state, refresh, mode, setMode, location, locationStatus, city, setCity, area, setArea, toast: setToastMsg,
+    config, setConfig, freeMode: config.freeMode,
+    // during free launch every logged-in user can contact owners and post offers
+    isCustomer: config.freeMode ? !!state.session : !!state.subs.customer?.active,
+    isOwner: config.freeMode ? !!state.session : !!state.subs.owner?.active,
     isAdmin: state.profile?.role === "admin", // super admin: all of India
     isStaff: ["admin", "moderator"].includes(state.profile?.role), // admin or city/state moderator
   };

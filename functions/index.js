@@ -54,10 +54,22 @@ async function staff(req, { superOnly = false } = {}) {
   throw new HttpsError("permission-denied", superOnly ? "Super admins only" : "Admins only");
 }
 async function needAdmin(req) { return (await staff(req, { superOnly: true })).uid; }
+// ---- free-launch mode ----
+// config/app.freeMode = true (or no config yet) means nobody needs a subscription: payments are on hold.
+// Super admins switch it in Admin -> Overview.
+let cfgCache = { at: 0, freeMode: true };
+async function freeMode() {
+  if (Date.now() - cfgCache.at < 30000) return cfgCache.freeMode;
+  const d = await db.doc("config/app").get();
+  cfgCache = { at: Date.now(), freeMode: !d.exists || d.data().freeMode !== false };
+  return cfgCache.freeMode;
+}
+
 function subActive(s) {
   return !!s && ["active", "cancelled"].includes(s.status) && s.currentPeriodEnd && s.currentPeriodEnd.toMillis() > Date.now();
 }
 async function planActive(uid, plan) {
+  if (await freeMode()) return true;
   const s = await db.doc(`subscriptions/${uid}_${plan}`).get();
   return s.exists && subActive(s.data());
 }
@@ -72,9 +84,21 @@ const offerSummary = (o) => ({
   origPrice: o.origPrice, endsAt: o.endsAt, businessName: o.business?.name || "", area: o.business?.area || "", city: o.business?.city || "",
 });
 const cityKey = (name) => String(name || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+const BASE32 = "0123456789bcdefghjkmnpqrstuvwxyz";
+function geohash(lat, lng, precision = 9) {
+  let latMin = -90, latMax = 90, lngMin = -180, lngMax = 180, hash = "", bit = 0, ch = 0, even = true;
+  while (hash.length < precision) {
+    if (even) { const m = (lngMin + lngMax) / 2; if (lng >= m) { ch |= 1 << (4 - bit); lngMin = m; } else lngMax = m; }
+    else { const m = (latMin + latMax) / 2; if (lat >= m) { ch |= 1 << (4 - bit); latMin = m; } else latMax = m; }
+    even = !even;
+    if (bit < 4) bit++; else { hash += BASE32[ch]; bit = 0; ch = 0; }
+  }
+  return hash;
+}
 const bizSummary = (b) => ({
-  name: b.name, area: b.area || "", city: b.city || "", state: b.state || "", cityKey: cityKey(b.city),
+  name: b.name, area: b.area || "", city: b.city || "", state: b.state || "", cityKey: cityKey(b.city), pincode: b.pincode || "",
   lat: b.lat ?? null, lng: b.lng ?? null,
+  geohash: typeof b.lat === "number" && typeof b.lng === "number" ? geohash(b.lat, b.lng) : null,
 });
 const DAY = 86400000;
 // keep in sync with RETENTION in src/lib/config.js
@@ -109,7 +133,10 @@ async function syncOwnerOffers(ownerId) {
   for (const d of offers.docs) {
     keys.add(d.data().cityKey);
     const patch = { visible };
-    if (business) { patch.business = business; patch.cityKey = business.cityKey; keys.add(business.cityKey); }
+    if (business) {
+      patch.business = business; patch.cityKey = business.cityKey; patch.pincode = business.pincode; patch.geohash = business.geohash;
+      keys.add(business.cityKey);
+    }
     batch.update(d.ref, patch);
     if (++n % 400 === 0) { await batch.commit(); batch = db.batch(); }
   }
@@ -129,7 +156,7 @@ exports.lpCreateOffer = onCall(async (req) => {
   if (!(await planActive(uid, "owner"))) throw new HttpsError("permission-denied", "An active Owner Pro subscription is needed to post offers");
   const contact = await db.doc(`businessContacts/${uid}`).get();
   if (!contact.exists) throw new HttpsError("failed-precondition", "Add your contact number in Business profile first");
-  if (!b.city || !b.state) throw new HttpsError("failed-precondition", "Add your city and state in Business profile first");
+  if (!b.city || !b.state || !b.pincode) throw new HttpsError("failed-precondition", "Add your city, state and pincode in Business profile first");
 
   const title = str(d.title, 120);
   const origPrice = Number(d.origPrice), price = Number(d.price), endsAt = Number(d.endsAt);
@@ -145,7 +172,7 @@ exports.lpCreateOffer = onCall(async (req) => {
   const ref = db.collection("offers").doc();
   const batch = db.batch();
   batch.set(ref, {
-    ownerId: uid, businessId: uid, business, cityKey: business.cityKey,
+    ownerId: uid, businessId: uid, business, cityKey: business.cityKey, pincode: business.pincode, geohash: business.geohash,
     title, description: str(d.description, 1000), category: str(d.category, 30) || "other", emoji: str(d.emoji, 8) || "📦",
     photoThumb, hasPhoto: !!photo, origPrice, price, quantity: str(d.quantity, 60),
     endsAt: Timestamp.fromMillis(endsAt), status: "live", visible: b.status === "verified", views: 0,
@@ -231,6 +258,7 @@ exports.lpBilling = onCall({ secrets: [RAZORPAY_KEY_SECRET] }, async (req) => {
   const uid = needAuth(req);
   const { action, plan } = req.data || {};
   if (!PLANS.includes(plan)) throw new HttpsError("invalid-argument", "Unknown plan");
+  if (await freeMode()) throw new HttpsError("failed-precondition", "LastPick is free during launch. No payment is needed.");
   const planId = plan === "customer" ? RAZORPAY_PLAN_CUSTOMER.value() : RAZORPAY_PLAN_OWNER.value();
   if (RAZORPAY_KEY_ID.value() === "unset" || planId === "unset") {
     throw new HttpsError("failed-precondition", "Online payments are not set up yet. Please contact support.");
@@ -318,7 +346,7 @@ exports.lpAdminSetPlan = onCall(async (req) => {
 // ---------------------------------------------------------------- upkeep triggers
 exports.lpOnBusinessWrite = onDocumentWritten({ document: "businesses/{ownerId}", database: DB_ID }, async (event) => {
   const before = event.data?.before?.data(), after = event.data?.after?.data();
-  const keys = ["status", "name", "area", "city", "state", "lat", "lng"];
+  const keys = ["status", "name", "area", "city", "state", "pincode", "lat", "lng"];
   if (before && after && keys.every((k) => before[k] === after[k])) return;
   await syncOwnerOffers(event.params.ownerId);
 });
@@ -433,7 +461,7 @@ exports.lpAdminStats = onCall(async (req) => {
     .filter((c) => me.canSee(c.state));
   const liveOffers = cities.reduce((n, c) => n + (c.liveOffers || 0), 0);
   return {
-    role: me.role, regions: me.regions,
+    role: me.role, regions: me.regions, freeMode: await freeMode(),
     totals: { users, verified, pending, suspended, customers, owners, leads30, openReports, archived, liveOffers },
     cities,
   };
@@ -543,4 +571,15 @@ exports.lpAdminResolveReport = onCall(async (req) => {
   if (removeOffer && r.offerId) await db.doc(`offers/${r.offerId}`).set({ status: "removed" }, { merge: true });
   await ref.update({ status, resolvedBy: me.uid, resolvedAt: FieldValue.serverTimestamp() });
   return { ok: true };
+});
+
+// Switch payments on/off for everyone. Re-syncs every owner's offer visibility afterwards.
+exports.lpAdminSetConfig = onCall({ timeoutSeconds: 300 }, async (req) => {
+  await needAdmin(req);
+  const free = req.data?.freeMode !== false;
+  await db.doc("config/app").set({ freeMode: free, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+  cfgCache = { at: Date.now(), freeMode: free };
+  const owners = await db.collection("businesses").select().get();
+  for (const b of owners.docs) await syncOwnerOffers(b.id);
+  return { freeMode: free, businesses: owners.size };
 });

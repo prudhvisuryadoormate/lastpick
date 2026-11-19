@@ -12,7 +12,8 @@ import { getFunctions, httpsCallable } from "firebase/functions";
 import { APP_NAME, PLANS } from "../lib/config.js";
 import { compressPhoto } from "../lib/image.js";
 import { cityKey } from "../lib/config.js";
-import { indianPhone } from "../lib/format.js";
+import { distanceKm, indianPhone } from "../lib/format.js";
+import { encodeGeohash, geohashPrefixes } from "../lib/geo.js";
 
 const env = import.meta.env;
 let fb;
@@ -67,7 +68,7 @@ const mapSub = (d) => d && ({
 });
 const mapBiz = (id, d, c) => ({
   id, ownerId: d.ownerId, name: d.name, category: d.category, about: d.about || "", address: d.address || "", area: d.area || "",
-  city: d.city || "", state: d.state || "", lat: d.lat ?? null, lng: d.lng ?? null, status: d.status, statusNote: d.statusNote || "",
+  city: d.city || "", state: d.state || "", pincode: d.pincode || "", lat: d.lat ?? null, lng: d.lng ?? null, status: d.status, statusNote: d.statusNote || "",
   createdAt: ms(d.createdAt), phone: c?.phone || "", whatsapp: c ? c.whatsapp !== false : true,
 });
 
@@ -154,7 +155,8 @@ export const api = {
   async saveBusiness(b) {
     const id = await uid();
     const fields = { name: b.name, category: b.category, about: b.about || "", address: b.address || "", area: b.area || "", city: b.city || "",
-      state: b.state || "", cityKey: cityKey(b.city), lat: b.lat ?? null, lng: b.lng ?? null };
+      state: b.state || "", cityKey: cityKey(b.city), pincode: String(b.pincode || "").trim(), lat: b.lat ?? null, lng: b.lng ?? null,
+      geohash: typeof b.lat === "number" && typeof b.lng === "number" ? encodeGeohash(b.lat, b.lng) : null };
     const ref = doc(F().db, "businesses", id);
     const exists = (await getDoc(ref)).exists();
     if (exists) await updateDoc(ref, fields);
@@ -169,6 +171,26 @@ export const api = {
     const q = query(collection(F().db, "offers"), where("cityKey", "==", city), where("visible", "==", true), where("status", "==", "live"),
       where("endsAt", ">", Timestamp.now()), orderBy("endsAt"), limit(200));
     return (await getDocs(q)).docs.map((d) => mapOffer(d.id, d.data()));
+  },
+  // Offers within radiusKm of a point: query the geohash cells around it, then keep exact matches.
+  async listNearby(lat, lng, radiusKm) {
+    const now = Date.now();
+    const snaps = await Promise.all(geohashPrefixes(lat, lng, radiusKm).map((p) => getDocs(query(collection(F().db, "offers"),
+      where("visible", "==", true), where("status", "==", "live"), where("geohash", ">=", p), where("geohash", "<=", p + "~"), limit(300)))));
+    const seen = new Map();
+    snaps.forEach((s) => s.docs.forEach((d) => seen.set(d.id, mapOffer(d.id, d.data()))));
+    return [...seen.values()]
+      .filter((o) => o.endsAt > now && distanceKm({ lat, lng }, o.business) <= radiusKm)
+      .sort((a, b) => a.endsAt - b.endsAt);
+  },
+  async listByPincode(pincode) {
+    const q = query(collection(F().db, "offers"), where("pincode", "==", String(pincode)), where("visible", "==", true), where("status", "==", "live"),
+      where("endsAt", ">", Timestamp.now()), orderBy("endsAt"), limit(200));
+    return (await getDocs(q)).docs.map((d) => mapOffer(d.id, d.data()));
+  },
+  async getConfig() {
+    try { const s = await getDoc(doc(F().db, "config", "app")); return { freeMode: !s.exists() || s.data().freeMode !== false }; }
+    catch { return { freeMode: true }; }
   },
   async listCities() {
     const snap = await getDocs(query(collection(F().db, "cities"), orderBy("liveOffers", "desc"), limit(300)));
@@ -249,4 +271,5 @@ export const api = {
   async adminReports() { return call("adminListReports", {}); },
   async resolveReport(id, status, removeOffer = false) { await call("adminResolveReport", { reportId: id, status, removeOffer }); },
   async adminSetPlan(email, plan, months) { await call("adminSetPlan", { email, plan, months }); },
+  async adminSetConfig(cfg) { return call("adminSetConfig", cfg); },
 };

@@ -10,11 +10,16 @@ export function Subscribe({ plan }) {
   return <NeedLogin why="Log in to subscribe"><SubscribeInner plan={plan} /></NeedLogin>;
 }
 function SubscribeInner({ plan }) {
-  const { subs, profile, refresh, toast, setMode } = useApp();
+  const { subs, profile, refresh, toast, setMode, freeMode } = useApp();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [done, setDone] = useState(false);
   if (!PLANS[plan]) return <Empty icon="🤔" title="Unknown plan" />;
+  if (freeMode) return (
+    <Empty icon="🎉" title="Free during launch" action={<a className="btn main" href={plan === "owner" ? "#/owner" : "#/"}>{plan === "owner" ? "Go to owner dashboard" : "Browse offers"}</a>}>
+      All features are unlocked. No subscription or payment is needed right now.
+    </Empty>
+  );
   const p = PLANS[plan], s = subs[plan];
 
   const pay = async () => {
@@ -268,7 +273,30 @@ function AdminInner() {
   );
 }
 
+function PaymentsSwitch({ data, setData, toast }) {
+  const { setConfig } = useApp();
+  const [busy, setBusy] = useState(false);
+  const flip = async () => {
+    setBusy(true);
+    try {
+      const r = await api.adminSetConfig({ freeMode: !data.freeMode });
+      setData({ ...data, freeMode: r.freeMode }); setConfig({ freeMode: r.freeMode });
+      toast(r.freeMode ? "Free mode on: no subscriptions needed" : "Payments on: subscriptions required");
+    } catch (e) { toast(errText(e)); }
+    setBusy(false);
+  };
+  return (
+    <div className={"status " + (data.freeMode ? "ok" : "no")}>
+      <span style={{ fontSize: 24 }}>{data.freeMode ? "🎉" : "💳"}</span>
+      <div className="grow"><b>{data.freeMode ? "Free launch mode is ON" : "Payments are ON"}</b>
+        <div className="muted small">{data.freeMode ? "Everyone who logs in can see numbers and post offers. No subscriptions." : "Customers need the Customer Pass and owners need Owner Pro."}</div></div>
+      <button className="btn ghost sm" disabled={busy} onClick={flip}>{busy ? "…" : data.freeMode ? "Turn payments on" : "Make it free"}</button>
+    </div>
+  );
+}
+
 function AdminOverview({ toast, go }) {
+  const { isAdmin } = useApp();
   const [data, setData] = useState(null);
   const [stateFilter, setStateFilter] = useState("");
   useEffect(() => { api.adminStats().then(setData).catch((e) => { toast(errText(e)); setData({ totals: {}, cities: [] }); }); }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -280,11 +308,12 @@ function AdminOverview({ toast, go }) {
   const Kpi = ({ n, l, onClick }) => <div className="kpi" onClick={onClick} style={onClick ? { cursor: "pointer" } : null}><div className="n">{n ?? "…"}</div><div className="l">{l}</div></div>;
   return (
     <>
-      <div className="plan" style={{ padding: 16, marginTop: 4 }}>
+      {isAdmin && <PaymentsSwitch data={data} setData={setData} toast={toast} />}
+      {!data.freeMode && <div className="plan" style={{ padding: 16, marginTop: 4 }}>
         <div style={{ opacity: .75, fontSize: 13 }}>Monthly recurring revenue (active plans)</div>
         <div className="amt" style={{ fontSize: 32 }}>{rupee(mrr)}</div>
         <div style={{ opacity: .75, fontSize: 12.5 }}>{t.customers} Customer Pass × {rupee(PLANS.customer.price)} + {t.owners} Owner Pro × {rupee(PLANS.owner.price)}</div>
-      </div>
+      </div>}
       <div className="kpis">
         <Kpi n={t.users} l="Registered users" onClick={() => go("users")} />
         <Kpi n={t.liveOffers} l="Live offers" />

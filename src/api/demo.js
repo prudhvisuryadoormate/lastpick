@@ -2,9 +2,9 @@
 // Used automatically when VITE_FIREBASE_API_KEY is not set. No real payments happen here.
 import { compressPhoto } from "../lib/image.js";
 import { cityKey } from "../lib/config.js";
-import { indianPhone } from "../lib/format.js";
+import { distanceKm, indianPhone } from "../lib/format.js";
 
-const KEY = "lastpick-demo-v3";
+const KEY = "lastpick-demo-v4";
 const H = 3600000, D = 86400000;
 const rid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 const wait = (ms = 150) => new Promise((r) => setTimeout(r, ms));
@@ -16,6 +16,8 @@ export const DEMO_ACCOUNTS = [
   { email: "admin@demo.in", password: "demo1234", label: "Admin (all India)" },
   { email: "moderator@demo.in", password: "demo1234", label: "Moderator (Telangana)" },
 ];
+
+const PINS = {"Indiranagar": "560038", "MG Road": "560001", "Jayanagar": "560041", "Majestic": "560009", "HSR Layout": "560102", "Koramangala": "560034", "Commercial Street": "560001", "Whitefield": "560066", "Banjara Hills": "500034", "Andheri East": "400069", "T. Nagar": "600017"};
 
 function seed() {
   const n = Date.now();
@@ -39,10 +41,11 @@ function seed() {
     ["o12", "Chennai Sweets", "food", "T. Nagar", 13.0418, 80.2341, "9840012345", "Chennai", "Tamil Nadu"],
   ].map(([owner, name, category, area, lat, lng, phone, city = "Bengaluru", state = "Karnataka"], i) => ({
     id: "b" + (i + 1), ownerId: owner, name, category, about: "", address: `${area}, ${city}`, area, city, state, cityKey: cityKey(city), lat, lng,
+    pincode: PINS[area] || "",
     status: "verified", statusNote: "", reportCount: 0, createdAt: n - 30 * D, phone: indianPhone(phone), whatsapp: true,
   }));
-  biz.push({ id: "b99", ownerId: "o9", name: "New Mobile World", category: "electronics", about: "", address: "SP Road", area: "SP Road", city: "Bengaluru", state: "Karnataka", cityKey: "bengaluru", lat: 12.968, lng: 77.58, status: "pending", statusNote: "", reportCount: 0, createdAt: n - 2 * H, phone: indianPhone("9988776655"), whatsapp: true });
-  biz.push({ id: "b98", ownerId: "o13", name: "Quick Deals Hyd", category: "electronics", about: "", address: "Ameerpet", area: "Ameerpet", city: "Hyderabad", state: "Telangana", cityKey: "hyderabad", lat: 17.4375, lng: 78.4482, status: "pending", statusNote: "", reportCount: 0, createdAt: n - 5 * H, phone: indianPhone("9849012345"), whatsapp: true });
+  biz.push({ id: "b99", ownerId: "o9", name: "New Mobile World", category: "electronics", about: "", address: "SP Road", area: "SP Road", city: "Bengaluru", state: "Karnataka", cityKey: "bengaluru", pincode: "560002", lat: 12.968, lng: 77.58, status: "pending", statusNote: "", reportCount: 0, createdAt: n - 2 * H, phone: indianPhone("9988776655"), whatsapp: true });
+  biz.push({ id: "b98", ownerId: "o13", name: "Quick Deals Hyd", category: "electronics", about: "", address: "Ameerpet", area: "Ameerpet", city: "Hyderabad", state: "Telangana", cityKey: "hyderabad", pincode: "500016", lat: 17.4375, lng: 78.4482, status: "pending", statusNote: "", reportCount: 0, createdAt: n - 5 * H, phone: indianPhone("9849012345"), whatsapp: true });
   const subs = ["u-own", "o2", "o3", "o4", "o5", "o6", "o7", "o8", "o10", "o11", "o12"].map((u) => ({ userId: u, plan: "owner", status: "active", currentPeriodEnd: n + 20 * D, provider: "demo" }));
   const o = (b, category, emoji, title, description, origPrice, price, quantity, endsIn, views) => ({
     id: rid(), businessId: b, title, description, category, emoji, photoUrl: null, origPrice, price, quantity,
@@ -71,14 +74,14 @@ function seed() {
     { id: rid(), ownerId: "u-own", businessName: "Sunrise Bakery", title: "Diwali sweets box", category: "food", emoji: "🪔", origPrice: 900, price: 540, views: 410, leads: 23, status: "live", createdAt: n - 25 * D, endsAt: n - 20 * D },
     { id: rid(), ownerId: "u-own", businessName: "Sunrise Bakery", title: "Birthday cakes, 30% off", category: "food", emoji: "🎂", origPrice: 1200, price: 840, views: 176, leads: 9, status: "ended", createdAt: n - 14 * D, endsAt: n - 12 * D },
   ];
-  return { v: 3, session: null, users, businesses: biz, subs, offers, leads, contacts: [], reports: [], photos: {}, archive };
+  return { v: 4, config: { freeMode: true }, session: null, users, businesses: biz, subs, offers, leads, contacts: [], reports: [], photos: {}, archive };
 }
 
 function load() {
   let db;
   try { db = JSON.parse(localStorage.getItem(KEY) || "null"); } catch { db = null; }
   // reseed when empty or when every demo offer has expired
-  if (!db || db.v !== 3 || !db.offers.some((o) => o.status === "live" && o.endsAt > Date.now())) {
+  if (!db || db.v !== 4 || !db.offers.some((o) => o.status === "live" && o.endsAt > Date.now())) {
     const fresh = seed();
     if (db?.session) fresh.session = db.session;
     db = fresh;
@@ -92,7 +95,7 @@ function me(db) {
   if (!u) throw new Error("Please log in");
   return u;
 }
-const hasPlan = (db, userId, plan) => db.subs.some((s) => s.userId === userId && s.plan === plan && ["active", "cancelled"].includes(s.status) && s.currentPeriodEnd > Date.now());
+const hasPlan = (db, userId, plan) => db.config?.freeMode !== false || db.subs.some((s) => s.userId === userId && s.plan === plan && ["active", "cancelled"].includes(s.status) && s.currentPeriodEnd > Date.now());
 const isAdmin = (db) => { const u = db.users.find((x) => x.id === db.session); return u?.role === "admin"; };
 function staff(db, superOnly = false) {
   const u = db.users.find((x) => x.id === db.session);
@@ -101,7 +104,7 @@ function staff(db, superOnly = false) {
   throw new Error(superOnly ? "Super admins only" : "Admins only");
 }
 const bizVisible = (db, b) => b && b.status === "verified" && hasPlan(db, b.ownerId, "owner");
-const pub = (b) => b && ({ id: b.id, name: b.name, category: b.category, about: b.about, area: b.area, city: b.city, state: b.state, cityKey: b.cityKey, address: b.address, lat: b.lat, lng: b.lng, status: b.status });
+const pub = (b) => b && ({ id: b.id, name: b.name, category: b.category, about: b.about, area: b.area, city: b.city, state: b.state, cityKey: b.cityKey, pincode: b.pincode, address: b.address, lat: b.lat, lng: b.lng, status: b.status });
 const withBiz = (db, o) => ({ ...o, business: pub(db.businesses.find((b) => b.id === o.businessId)) });
 const emit = () => listeners.forEach((cb) => cb());
 const subOut = (s) => s && ({ ...s, active: ["active", "cancelled"].includes(s.status) && s.currentPeriodEnd > Date.now() });
@@ -164,6 +167,7 @@ export const api = {
     await wait();
     const db = load(); const u = me(db);
     const fields = { name: b.name, category: b.category, about: b.about, address: b.address, area: b.area, city: b.city, state: b.state, cityKey: cityKey(b.city),
+      pincode: String(b.pincode || "").trim(),
       lat: b.lat, lng: b.lng, phone: indianPhone(b.phone) || b.phone, whatsapp: !!b.whatsapp };
     let x = db.businesses.find((y) => y.ownerId === u.id);
     if (x) Object.assign(x, fields);
@@ -179,6 +183,22 @@ export const api = {
       .map((o) => withBiz(db, o)).filter((o) => o.business?.cityKey === city && bizVisible(db, db.businesses.find((b) => b.id === o.businessId)))
       .sort((a, b) => a.endsAt - b.endsAt);
   },
+  async listNearby(lat, lng, radiusKm) {
+    await wait(80);
+    const db = load(), now = Date.now();
+    return db.offers.filter((o) => o.status === "live" && o.endsAt > now).map((o) => withBiz(db, o))
+      .filter((o) => bizVisible(db, db.businesses.find((b) => b.id === o.businessId)) && o.business?.lat != null && distanceKm({ lat, lng }, o.business) <= radiusKm)
+      .sort((a, b) => a.endsAt - b.endsAt);
+  },
+  async listByPincode(pin) {
+    await wait(80);
+    const db = load(), now = Date.now();
+    return db.offers.filter((o) => o.status === "live" && o.endsAt > now).map((o) => withBiz(db, o))
+      .filter((o) => o.business?.pincode === String(pin) && bizVisible(db, db.businesses.find((b) => b.id === o.businessId)))
+      .sort((a, b) => a.endsAt - b.endsAt);
+  },
+  async getConfig() { return { freeMode: load().config?.freeMode !== false }; },
+  async adminSetConfig(cfg) { const db = load(); staff(db, true); db.config = { ...(db.config || {}), freeMode: cfg.freeMode !== false }; save(db); return db.config; },
   async listCities() {
     const db = load(), now = Date.now(), map = {};
     db.businesses.forEach((b) => { if (b.cityKey && !map[b.cityKey]) map[b.cityKey] = { key: b.cityKey, name: b.city, state: b.state, lat: b.lat, lng: b.lng, liveOffers: 0 }; });
@@ -209,7 +229,7 @@ export const api = {
     if (!b) throw new Error("Set up your business first");
     if (!hasPlan(db, u.id, "owner")) throw new Error("An active Owner Pro subscription is needed to post offers");
     if (!(o.price < o.origPrice)) throw new Error("Offer price must be lower than the normal price");
-    if (!b.city || !b.state) throw new Error("Add your city and state in Business profile first");
+    if (!b.city || !b.state || !b.pincode) throw new Error("Add your city, state and pincode in Business profile first");
     const id = rid();
     db.offers.push({ id, businessId: b.id, title: o.title, description: o.description, category: o.category, emoji: o.emoji, photoUrl: o.photoThumb || null,
       hasPhoto: !!o.photo, origPrice: o.origPrice, price: o.price, quantity: o.quantity, endsAt: o.endsAt, status: "live", views: 0, createdAt: Date.now(),
@@ -294,7 +314,7 @@ export const api = {
       .map((c) => ({ ...c, verifiedBusinesses: db.businesses.filter((b) => b.cityKey === c.key && b.status === "verified").length }));
     const active = (p) => db.subs.filter((x) => x.plan === p && ["active", "cancelled"].includes(x.status) && x.currentPeriodEnd > now).length;
     return {
-      role: s.role, regions: s.regions,
+      role: s.role, regions: s.regions, freeMode: db.config?.freeMode !== false,
       totals: {
         users: db.users.length, verified: db.businesses.filter((b) => b.status === "verified").length,
         pending: db.businesses.filter((b) => b.status === "pending").length, suspended: db.businesses.filter((b) => b.status === "suspended").length,

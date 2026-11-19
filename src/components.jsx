@@ -21,7 +21,7 @@ export function OfferImage({ offer, className = "top", children }) {
 }
 
 export function OfferCard({ offer, preview = false }) {
-  const { location, isCustomer } = useApp();
+  const { location, isCustomer, freeMode } = useApp();
   const km = distanceKm(location, offer.business);
   const body = (
     <>
@@ -34,7 +34,7 @@ export function OfferCard({ offer, preview = false }) {
         <div className="s">{offer.business?.name} · {offer.business?.area}{km != null && km < 100 ? " · " + kmText(km) : ""}</div>
         <div className="foot">
           <div className="price"><b>{rupee(offer.price)}</b><s>{rupee(offer.origPrice)}</s></div>
-          {isCustomer || preview ? <span className="pill p-ok">📞 Number visible</span> : <span className="pill p-mute">🔒 Number locked</span>}
+          {isCustomer || preview ? <span className="pill p-ok">📞 Number visible</span> : <span className="pill p-mute">{freeMode ? "🔑 Log in for number" : "🔒 Number locked"}</span>}
         </div>
       </div>
     </>

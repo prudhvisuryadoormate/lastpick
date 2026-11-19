@@ -4,6 +4,7 @@ import { Empty, NeedLogin, OfferCard, PlanCard, Sheet, Spinner, Toggle } from ".
 import { APP_NAME, CATEGORIES, DURATIONS, EMOJIS, INDIAN_STATES, IS_OWNER_APP, MAJOR_CITIES, PLANS, RETENTION, TEMPLATES, TINTS } from "../lib/config.js";
 import { ago, day, errText, prettyPhone, rupee, telLink, timeLeft, validPhone, waLink } from "../lib/format.js";
 import { navigate, useApp, useNow } from "../state.jsx";
+import { validPincode } from "../lib/geo.js";
 
 // Every owner page goes through this gate: login -> business profile -> Owner Pro -> page.
 export function OwnerGate({ children, allowWithoutPlan = false }) {
@@ -45,7 +46,7 @@ function StatusBanner() {
 
 // ------------------------------------------------------------------ Dashboard
 export function OwnerDashboard() {
-  const { business, subs, setMode } = useApp();
+  const { business, subs, setMode, freeMode } = useApp();
   const [offers, setOffers] = useState(null);
   const [leads, setLeads] = useState(null);
   const now = useNow(30000);
@@ -67,7 +68,7 @@ export function OwnerDashboard() {
       <div className="plan" style={{ padding: 16, marginTop: 12 }}>
         <div style={{ opacity: .75, fontSize: 13 }}>Interested customers, last 30 days</div>
         <div className="amt" style={{ fontSize: 34 }}>{leads ? monthLeads : "…"}</div>
-        <div style={{ opacity: .75, fontSize: 12.5 }}>{views} views on your offers · Owner Pro {subs.owner?.status === "cancelled" ? "ends" : "renews"} {day(subs.owner.currentPeriodEnd)}</div>
+        <div style={{ opacity: .75, fontSize: 12.5 }}>{views} views on your offers · {freeMode || !subs.owner ? "Free during launch" : `Owner Pro ${subs.owner.status === "cancelled" ? "ends" : "renews"} ${day(subs.owner.currentPeriodEnd)}`}</div>
       </div>
       <div className="kpis">
         <div className="kpi"><div className="n">{offers ? live.length : "…"}</div><div className="l">Live offers</div></div>
@@ -234,7 +235,7 @@ export function PostOffer() {
     <>
       <div className="page-h"><h1 className="title">Post an offer</h1><div className="muted">Anything you need to move before it becomes a loss</div></div>
       <StatusBanner />
-      {(!business.state || !business.city) && <a className="banner warn" href="#/owner/business">📍 Add your city and state in Business profile before posting. Customers find offers by city.</a>}
+      {(!business.state || !business.city || !business.pincode || business.lat == null) && <a className="banner warn" href="#/owner/business">📍 Add your pincode and shop location in Business profile before posting. Customers see offers near them.</a>}
       <div className="chips">{TEMPLATES.map((t) => <button key={t.label} className="chip" onClick={() => useTemplate(t)}>{t.emoji} {t.label}</button>)}</div>
       <div className="form">
         <div className="fld"><label>Photo (optional)</label>
@@ -282,7 +283,7 @@ function BusinessForm({ first = false }) {
   const { business, profile, refresh, toast } = useApp();
   const [f, setF] = useState(() => ({
     name: business?.name || "", category: business?.category || "food", about: business?.about || "", address: business?.address || "",
-    area: business?.area || "", city: business?.city || "", state: business?.state || "", lat: business?.lat ?? null, lng: business?.lng ?? null,
+    area: business?.area || "", city: business?.city || "", state: business?.state || "", pincode: business?.pincode || "", lat: business?.lat ?? null, lng: business?.lng ?? null,
     phone: business?.phone || profile?.phone || "", whatsapp: business?.whatsapp ?? true, agree: !first,
   }));
   const [busy, setBusy] = useState(false);
@@ -304,6 +305,8 @@ function BusinessForm({ first = false }) {
   if (!f.area.trim()) missing.push("area");
   if (!f.city.trim()) missing.push("city");
   if (!f.state) missing.push("state");
+  if (!validPincode(f.pincode)) missing.push("a 6-digit pincode");
+  if (f.lat == null) missing.push("your shop's map location (tap Use my location at your shop)");
   if (!validPhone(f.phone)) missing.push("a valid Indian contact number");
   if (!f.agree) missing.push("agreement to the owner terms");
 
@@ -339,11 +342,13 @@ function BusinessForm({ first = false }) {
             onChange={(e) => { const v = e.target.value; const m = MAJOR_CITIES.find((c) => c.name.toLowerCase() === v.trim().toLowerCase()); setF((p) => ({ ...p, city: v, state: m ? m.state : p.state })); }} />
             <datalist id="lp-cities">{MAJOR_CITIES.map((c) => <option key={c.name} value={c.name} />)}</datalist></div>
         </div>
+        <div className="fld"><label>Pincode</label><input inputMode="numeric" maxLength={6} value={f.pincode} onChange={(e) => set("pincode", e.target.value.replace(/\D/g, ""))} placeholder="e.g. 560038" />
+          <span className="hint">Customers searching this pincode will see your offers.</span></div>
         <div className="fld"><label>State</label>
           <select value={f.state} onChange={(e) => set("state", e.target.value)}><option value="">Select state</option>{INDIAN_STATES.map((s) => <option key={s}>{s}</option>)}</select>
           <span className="hint">LastPick is available for businesses in India.</span></div>
         <div className="toggle">
-          <div><b style={{ fontSize: 14 }}>Map location</b><div className="muted small">{f.lat != null ? `Saved (${Number(f.lat).toFixed(4)}, ${Number(f.lng).toFixed(4)})` : "Shows your offers on the map and sorts them by distance"}</div></div>
+          <div><b style={{ fontSize: 14 }}>Shop location (required)</b><div className="muted small">{f.lat != null ? `Saved (${Number(f.lat).toFixed(4)}, ${Number(f.lng).toFixed(4)})` : "Do this at your shop. Customers within their chosen distance (e.g. 30 km) see your offers."}</div></div>
           <button className="btn ghost sm" type="button" disabled={locating} onClick={locate}>{locating ? "Locating…" : "📍 Use my location"}</button>
         </div>
         <div className="fld"><label>About (optional)</label><textarea rows="2" maxLength={500} value={f.about} onChange={(e) => set("about", e.target.value)} placeholder="What you do, opening hours…" /></div>

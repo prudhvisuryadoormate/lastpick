@@ -18,6 +18,11 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/subscriptions/$(uid() + '_owner')).data.currentPeriodEnd > request.time
         && get(/databases/$(database)/documents/subscriptions/$(uid() + '_owner')).data.status in ['active', 'cancelled'];
     }
+    // free-launch mode: no config yet, or config/app.freeMode != false
+    function freeMode() {
+      return !exists(/databases/$(database)/documents/config/app)
+        || get(/databases/$(database)/documents/config/app).data.freeMode != false;
+    }
     function onlyChanged(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
 
     // ---- users: own profile; role and email are fixed ----
@@ -55,6 +60,11 @@ service cloud.firestore {
       allow read: if signedIn() && (resource.data.ownerId == uid() || isAdmin());
     }
 
+    // ---- app settings (free-launch mode); written by lpAdminSetConfig ----
+    match /config/{doc} {
+      allow read: if true;
+    }
+
     // ---- live-offer counters per city (for the city picker) ----
     match /cities/{cityKey} {
       allow read: if true;
@@ -80,7 +90,7 @@ service cloud.firestore {
     // ---- leads: customers who shared their number. Owner sees them while Owner Pro is active. ----
     match /leads/{leadId} {
       allow read: if signedIn() && (resource.data.customerId == uid()
-        || (resource.data.ownerId == uid() && ownerPlanActive())
+        || (resource.data.ownerId == uid() && (freeMode() || ownerPlanActive()))
         || isAdmin());
       allow update: if signedIn() && resource.data.ownerId == uid() && onlyChanged(['status'])
         && request.resource.data.status in ['new', 'contacted', 'closed'];
