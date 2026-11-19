@@ -5,7 +5,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/index.js";
 import { BackButton, NeedLogin, Sheet, Spinner } from "../components.jsx";
-import { APP_NAME, CONSENT_VERSION, GRIEVANCE_TYPES, LEGAL, PLANS, RETENTION, SUPPORT_EMAIL, WEBSITE_URL } from "../lib/config.js";
+import { APP_NAME, CONSENT_VERSION, GRIEVANCE_TYPES, LEGAL, PLANS, RETENTION, SUPPORT_EMAIL, TRIAL_DAYS, WEBSITE_URL } from "../lib/config.js";
 import { day, errText, rupee } from "../lib/format.js";
 import { navigate, useApp } from "../state.jsx";
 
@@ -163,7 +163,7 @@ export function Terms() {
         <h2>6. Reviews</h2>
         <p>Only customers who contacted a business through {APP_NAME} can review it, and reviews are marked "Contacted via {APP_NAME}". Businesses can reply but can't remove reviews. We remove reviews that are fake, abusive, off-topic or contain personal information. Anyone can report a review.</p>
         <h2>7. Plans and payments</h2>
-        <p>{APP_NAME} is free during launch. If paid plans start (Customer Pass {rupee(PLANS.customer.price)}/month, Owner Pro {rupee(PLANS.owner.price)}/month), the price will be shown clearly before you pay, and you can cancel anytime. See the <a className="link" href="#/refund">refund policy</a>.</p>
+        <p>Every account gets {TRIAL_DAYS} days free: customers from sign-up, businesses from the day we verify them. After that, the Customer Pass is {rupee(PLANS.customer.price)}/month and Business Pro (for verified business partners) is {rupee(PLANS.owner.price)}/month, with lower prices per month on 3, 6 and 12-month plans. See <a className="link" href="#/plans">Plans</a>. You're never charged without choosing a plan and confirming the payment, and you can cancel anytime. See the <a className="link" href="#/refund">refund policy</a>.</p>
         <h2>8. Verification, reports and removal</h2>
         <p>Verification is not a guarantee. Anyone can report an offer or review. We may remove content or suspend accounts that break these terms or the law, and we act on valid orders from courts and government agencies.</p>
         <h2>9. Complaints and law</h2>

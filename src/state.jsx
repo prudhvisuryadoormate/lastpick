@@ -106,9 +106,10 @@ export function AppProvider({ children }) {
   const value = {
     ...state, refresh, mode, setMode, location, locationStatus, city, setCity, area, setArea, toast: setToastMsg,
     config, setConfig, freeMode: config.freeMode,
-    // during free launch every logged-in user can contact owners and post offers
-    isCustomer: config.freeMode ? !!state.session : !!state.subs.customer?.active,
-    isOwner: config.freeMode ? !!state.session : !!state.subs.owner?.active,
+    // free month: customers from sign-up, businesses from verification. During free launch everyone logged in has access.
+    trial: { customer: state.profile?.trialEndsAt || null, owner: state.business?.trialEndsAt || null },
+    isCustomer: !!state.session && (config.freeMode || !!state.subs.customer?.active || (state.profile?.trialEndsAt || 0) > Date.now()),
+    isOwner: !!state.session && (config.freeMode || !!state.subs.owner?.active || state.business?.status === "pending" || (state.business?.trialEndsAt || 0) > Date.now()),
     isAdmin: state.profile?.role === "admin", // super admin: all of India
     isStaff: ["admin", "moderator"].includes(state.profile?.role), // admin or city/state moderator
   };

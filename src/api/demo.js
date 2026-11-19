@@ -100,7 +100,12 @@ function me(db) {
   if (!u) throw new Error("Please log in");
   return u;
 }
-const hasPlan = (db, userId, plan) => db.config?.freeMode !== false || db.subs.some((s) => s.userId === userId && s.plan === plan && ["active", "cancelled"].includes(s.status) && s.currentPeriodEnd > Date.now());
+function inTrial(db, userId, plan) {
+  if (plan === "customer") { const u = db.users.find((x) => x.id === userId); return !!u && (u.trialEndsAt || (u.createdAt || 0) + 30 * D) > Date.now(); }
+  const b = db.businesses.find((x) => x.ownerId === userId);
+  return !!b && b.status === "verified" && (b.trialEndsAt || b.createdAt + 30 * D) > Date.now();
+}
+const hasPlan = (db, userId, plan) => db.config?.freeMode !== false || inTrial(db, userId, plan) || db.subs.some((s) => s.userId === userId && s.plan === plan && ["active", "cancelled"].includes(s.status) && s.currentPeriodEnd > Date.now());
 const isAdmin = (db) => { const u = db.users.find((x) => x.id === db.session); return u?.role === "admin"; };
 function staff(db, superOnly = false) {
   const u = db.users.find((x) => x.id === db.session);
@@ -139,16 +144,40 @@ export const api = {
     await wait();
     const db = load();
     if (db.users.some((x) => x.email.toLowerCase() === email.trim().toLowerCase())) throw new Error("An account with this email already exists");
-    const u = { id: "u-" + rid(), email: email.trim(), password, name, phone: indianPhone(phone) || phone, role: "user", createdAt: Date.now(), consent: consent ? CONSENT_VERSION : null };
+    const u = { id: "u-" + rid(), email: email.trim(), password, name, phone: indianPhone(phone) || phone, role: "user", createdAt: Date.now(), trialEndsAt: Date.now() + 30 * D, consent: consent ? CONSENT_VERSION : null };
     if (consent) db.consentLog.push({ userId: u.id, kind: "user", version: CONSENT_VERSION, items: consent.items || [], at: Date.now() });
     db.users.push(u); db.session = u.id; save(db); emit();
     return { needsConfirmation: false };
   },
   async resetPassword() { await wait(); },
+  // ---------- one-time codes (demo: the code is always 123456) ----------
+  async sendPhoneOtp(phone) { await wait(300); const p = indianPhone(phone); if (!p) throw new Error("Please enter a valid Indian mobile number"); this._otp = { kind: "phone", value: p }; },
+  async sendEmailOtp(email) { await wait(300); if (!/^\S+@\S+\.\S+$/.test(email)) throw new Error("Please enter a valid e-mail address"); this._otp = { kind: "email", value: email.trim().toLowerCase() }; },
+  async verifyPhoneOtp(code) { return this._verifyOtp(code); },
+  async verifyEmailOtp(email, code) { return this._verifyOtp(code); },
+  async _verifyOtp(code) {
+    await wait(300);
+    if (!this._otp) throw new Error("Ask for a code first");
+    if (String(code) !== "123456") throw new Error("That code is not right. Check it and try again.");
+    const db = load(); const { kind, value } = this._otp;
+    let u = db.users.find((x) => (kind === "phone" ? x.phone === value : (x.email || "").toLowerCase() === value));
+    const isNew = !u;
+    if (!u) { u = { id: "u-" + rid(), email: kind === "email" ? value : "", phone: kind === "phone" ? value : "", role: "user", createdAt: Date.now(), needsProfile: true }; db.users.push(u); }
+    db.session = u.id; this._otp = null; save(db); emit();
+    return { isNew };
+  },
+  async completeProfile({ name, phone, email, consent }) {
+    await wait();
+    const db = load(); const u = me(db);
+    Object.assign(u, { name, phone: u.phone || indianPhone(phone) || phone, email: u.email || (email || "").trim(), needsProfile: false, trialEndsAt: Date.now() + 30 * D, consent: CONSENT_VERSION });
+    db.consentLog.push({ userId: u.id, kind: "user", version: CONSENT_VERSION, items: consent?.items || [], at: Date.now() });
+    save(db); emit();
+  },
   async signOut() { const db = load(); db.session = null; save(db); emit(); },
   async getProfile() {
     const u = me(load());
-    return { id: u.id, name: u.name, phone: u.phone, email: u.email, role: u.role, regions: u.regions || [], consentVersion: u.consent || null, partnerConsentVersion: u.partnerConsent || null };
+    if (u.needsProfile) return { id: u.id, needsProfile: true, name: "", phone: u.phone || "", email: u.email || "", role: "user", regions: [] };
+    return { trialEndsAt: u.trialEndsAt || (u.createdAt || Date.now()) + 30 * D, id: u.id, name: u.name, phone: u.phone, email: u.email, role: u.role, regions: u.regions || [], consentVersion: u.consent || null, partnerConsentVersion: u.partnerConsent || null };
   },
   async updateProfile({ name, phone }) { const db = load(); const u = me(db); u.name = name; u.phone = indianPhone(phone) || phone; save(db); },
 
@@ -175,7 +204,7 @@ export const api = {
   async myBusiness() {
     const db = load(); const u = me(db);
     const b = db.businesses.find((x) => x.ownerId === u.id);
-    return b ? { ...b } : null;
+    return b ? { ...b, trialEndsAt: b.trialEndsAt || (b.status === "verified" ? b.createdAt + 30 * D : null) } : null;
   },
   async saveBusiness(b) {
     await wait();
@@ -241,7 +270,7 @@ export const api = {
     const db = load(); const u = me(db);
     const b = db.businesses.find((x) => x.ownerId === u.id);
     if (!b) throw new Error("Set up your business first");
-    if (!hasPlan(db, u.id, "owner")) throw new Error("An active Owner Pro subscription is needed to post offers");
+    if (b.status !== "pending" && !hasPlan(db, u.id, "owner")) throw new Error("Your free month has ended. Pick a Business Pro plan to post offers.");
     if (!(o.price < o.origPrice)) throw new Error("Offer price must be lower than the normal price");
     if (!b.city || !b.state || !b.pincode) throw new Error("Add your city, state and pincode in Business profile first");
     const allowed = b.categories?.length ? b.categories : [b.category];
@@ -379,7 +408,9 @@ export const api = {
     const b = db.businesses.find((x) => x.id === id);
     if (!b) throw new Error("Business not found");
     if (!s.canSee(b.state)) throw new Error("This business is outside your region");
-    b.status = status; b.statusNote = note || ""; save(db);
+    b.status = status; b.statusNote = note || "";
+    if (status === "verified" && !b.trialEndsAt) b.trialEndsAt = Date.now() + 30 * D;
+    save(db);
   },
   async adminReports() {
     const db = load(); const s = staff(db);

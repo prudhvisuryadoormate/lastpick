@@ -14,6 +14,14 @@ service cloud.firestore {
       return signedIn() && get(/databases/$(database)/documents/users/$(uid())).data.role == 'admin';
     }
     function ownerPlanActive() {
+      return ownerTrial() || ownerSub();
+    }
+    // free month for a verified business (set by lpAdminSetBusinessStatus)
+    function ownerTrial() {
+      return exists(/databases/$(database)/documents/businesses/$(uid()))
+        && get(/databases/$(database)/documents/businesses/$(uid())).data.get('trialEndsAt', timestamp.value(0)) > request.time;
+    }
+    function ownerSub() {
       return exists(/databases/$(database)/documents/subscriptions/$(uid() + '_owner'))
         && get(/databases/$(database)/documents/subscriptions/$(uid() + '_owner')).data.currentPeriodEnd > request.time
         && get(/databases/$(database)/documents/subscriptions/$(uid() + '_owner')).data.status in ['active', 'cancelled'];
@@ -46,7 +54,7 @@ service cloud.firestore {
         && request.resource.data.ownerId == uid()
         && request.resource.data.status == 'pending';
       allow update: if signedIn() && (
-        (bizId == uid() && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'statusNote', 'ownerId', 'reportCount', 'reviewedBy', 'reviewedAt', 'rating'])
+        (bizId == uid() && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'statusNote', 'ownerId', 'reportCount', 'reviewedBy', 'reviewedAt', 'rating', 'trialEndsAt'])
           && (!('categories' in request.resource.data) || (request.resource.data.categories is list && request.resource.data.categories.size() <= 3)))
         || isAdmin());
     }
@@ -113,7 +121,7 @@ service cloud.firestore {
       allow read: if signedIn() && (resource.data.userId == uid() || isAdmin());
     }
 
-    // auditLog, consentLog, rateLimits and deletedAccounts have no rule, so apps can't read or write them.
+    // auditLog, consentLog, rateLimits, deletedAccounts and otps have no rule, so apps can't read or write them.
 
     // ---- reports of misuse ----
     match /reports/{reportId} {

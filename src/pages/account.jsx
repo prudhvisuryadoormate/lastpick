@@ -1,155 +1,80 @@
 import { useEffect, useState } from "react";
-import { DEMO_ACCOUNTS, api, isLive } from "../api/index.js";
+import { api, isLive } from "../api/index.js";
 import { BackButton, Empty, NeedLogin, PlanCard, Spinner } from "../components.jsx";
-import { APP_NAME, INDIAN_STATES, IS_NATIVE, IS_OWNER_APP, PLANS, SUPPORT_EMAIL } from "../lib/config.js";
-import { ConsentBoxes, NOTICE_ITEMS, consentPayload } from "./privacy.jsx";
-import { ago, day, errText, prettyPhone, rupee, validPhone } from "../lib/format.js";
+import { APP_NAME, INDIAN_STATES, IS_CUSTOMER_APP, IS_NATIVE, IS_OWNER_APP, PLANS, SUPPORT_EMAIL, TRIAL_DAYS, planLabel, savePct } from "../lib/config.js";
+import { ago, day, daysLeft, errText, prettyPhone, rupee, validPhone } from "../lib/format.js";
 import { navigate, useApp } from "../state.jsx";
 
-// ------------------------------------------------------------------ Subscribe
-export function Subscribe({ plan }) {
-  return <NeedLogin why="Log in to subscribe"><SubscribeInner plan={plan} /></NeedLogin>;
-}
-function SubscribeInner({ plan }) {
-  const { subs, profile, refresh, toast, setMode, freeMode } = useApp();
+// ------------------------------------------------------------------ Plans & pricing
+// Free month first (customers from sign-up, businesses from verification). Then monthly, 3, 6 or 12-month plans.
+export function Subscribe({ plan }) { return <Plans plan={plan} />; }
+export function Plans({ plan: initial }) {
+  const { session, subs, profile, business, trial, refresh, freeMode } = useApp();
+  const [plan, setPlan] = useState(PLANS[initial] ? initial : IS_OWNER_APP ? "owner" : "customer");
+  const [months, setMonths] = useState(1);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [done, setDone] = useState(false);
-  if (!PLANS[plan]) return <Empty icon="🤔" title="Unknown plan" />;
-  if (freeMode) return (
-    <Empty icon="🎉" title="Free during launch" action={<a className="btn main" href={plan === "owner" ? "#/owner" : "#/"}>{plan === "owner" ? "Go to owner dashboard" : "Browse offers"}</a>}>
-      All features are unlocked. No subscription or payment is needed right now.
-    </Empty>
-  );
-  const p = PLANS[plan], s = subs[plan];
-  // Google Play: app features can't be sold through an outside payment gateway inside the app.
-  if (IS_NATIVE && !s?.active) return <Empty icon="📱" title="Plans aren't available in the app">Your account doesn't have an active {p.name} right now.</Empty>;
-
+  const p = PLANS[plan], s = subs?.[plan], opt = p.options.find((o) => o.months === months) || p.options[0];
+  const trialEnd = trial?.[plan];
+  const left = daysLeft(trialEnd);
+  const canPay = !freeMode && !IS_NATIVE && months === 1 && !!session && left === 0;
   const pay = async () => {
-    if (plan === "customer" && !validPhone(profile?.phone)) { setErr("Add your phone number in Account first, so owners can reach you."); return; }
+    if (plan === "customer" && !validPhone(profile?.phone)) { setErr("Add your phone number in Account first, so businesses can reach you."); return; }
     setBusy(true); setErr("");
-    try { await api.subscribe(plan, profile); await refresh(); setDone(true); }
-    catch (e) { setErr(errText(e)); }
+    try { await api.subscribe(plan, profile); await refresh(); } catch (e) { setErr(errText(e)); }
     setBusy(false);
   };
-
-  if (done || (s?.active && !busy)) {
-    return (
-      <div className="pad center" style={{ paddingTop: 50 }}>
-        <div style={{ width: 80, height: 80, borderRadius: "50%", background: "var(--ok)", color: "#fff", fontSize: 40, display: "grid", placeItems: "center", margin: "0 auto 14px" }}>✓</div>
-        <h1 className="title">{done ? "You're subscribed!" : `${p.name} is active`}</h1>
-        <p className="muted">{p.name} is active till {day(subs[plan]?.currentPeriodEnd || Date.now() + 30 * 86400000)}. It renews monthly; cancel anytime in Account.</p>
-        <button className="btn main" style={{ marginTop: 10 }} onClick={() => { if (plan === "owner") { setMode("owner"); navigate("/owner"); } else { setMode("customer"); navigate("/"); } }}>
-          {plan === "owner" ? "Start posting offers" : "Start exploring offers"}
-        </button>
-      </div>
-    );
+  let status = null;
+  if (session) {
+    if (s?.active) status = ["ok", "✅", `${p.name} is active`, `Till ${day(s.currentPeriodEnd)}`];
+    else if (left > 0) status = ["ok", "🎁", `Free month: ${left} day${left > 1 ? "s" : ""} left`, `Free until ${day(trialEnd)}. After that ${rupee(p.price)}/month, or less on a longer plan.`];
+    else if (plan === "owner" && !business) status = ["no", "🏪", "Your free month starts when your business is verified", `Register your business; once we verify it, ${TRIAL_DAYS} days are free.`];
+    else if (plan === "owner" && business.status !== "verified") status = ["no", "⏳", "Waiting for verification", `Your ${TRIAL_DAYS} free days start the day we verify your business.`];
+    else if (freeMode) status = ["ok", "🎉", "Free during launch", `Your free month is over, but ${APP_NAME} is free for everyone during launch. We'll tell you before paid plans start.`];
+    else status = ["no", "⚠️", "Your free month has ended", `Pick a plan to keep ${plan === "owner" ? "posting offers" : "seeing businesses' numbers"}.`];
   }
-
   return (
     <>
       <div style={{ position: "relative", height: 62 }}><BackButton /></div>
-      <div className="page-h" style={{ paddingTop: 0 }}><h1 className="title">{plan === "owner" ? "Owner subscription" : "Customer subscription"}</h1><div className="muted">Monthly plan · cancel anytime</div></div>
+      <div className="page-h" style={{ paddingTop: 0 }}><h1 className="title">Plans</h1>
+        <div className="muted">Every account starts with {TRIAL_DAYS} days free.</div></div>
+      {!IS_OWNER_APP && !IS_CUSTOMER_APP && <div className="tabs">
+        <button className={plan === "customer" ? "on" : ""} onClick={() => setPlan("customer")}>For customers</button>
+        <button className={plan === "owner" ? "on" : ""} onClick={() => setPlan("owner")}>For businesses</button>
+      </div>}
+      {status && <div className={"status " + status[0]}><span style={{ fontSize: 24 }}>{status[1]}</span><div><b>{status[2]}</b><div className="muted small">{status[3]}</div></div></div>}
       <PlanCard plan={plan} />
+      <div className="label-up" style={{ paddingBottom: 12 }}>After the free month{plan === "owner" ? " (verified businesses)" : ""}</div>
+      <div className="planopts">
+        {p.options.map((o) => {
+          const save = savePct(plan, o);
+          return (
+            <button key={o.months} className={"planopt " + (o.months === months ? "on" : "")} aria-pressed={o.months === months} onClick={() => setMonths(o.months)}>
+              {save > 0 && <span className="save">Save {save}%</span>}
+              <div className="m">{planLabel(o.months)}</div>
+              <div className="p">{rupee(o.price)}</div>
+              <div className="pm">{o.months > 1 ? `${rupee(Math.round(o.price / o.months))}/month` : "per month"}</div>
+            </button>
+          );
+        })}
+      </div>
       <div className="pad">
         {!isLive && <div className="banner warn" style={{ margin: "0 0 12px" }}>Demo mode: no real payment is taken.</div>}
         {err && <div className="error" style={{ marginBottom: 12 }}>{err} {err.includes("phone") && <a className="link" href="#/account">Open Account</a>}</div>}
-        <button className="btn main" disabled={busy} onClick={pay}>{busy ? "Opening payment…" : `Subscribe for ${rupee(p.price)}/month`}</button>
-        <div className="note">Pay with UPI AutoPay, cards or net banking through Razorpay. You can cancel anytime; the plan stays active until the end of the paid month.
-          {" "}{APP_NAME} only connects customers and owners; offers and services are between them.</div>
+        {canPay
+          ? <button className="btn main" disabled={busy} onClick={pay}>{busy ? "Opening payment…" : `Subscribe for ${rupee(opt.price)}`}</button>
+          : <div className="box small"><b>{planLabel(opt.months)}: {rupee(opt.price)}.</b> {freeMode || left > 0
+            ? "Payments aren't switched on yet. Nothing is charged now, and we'll tell you before any payment is needed. Plans never renew without your OK."
+            : IS_NATIVE ? "Plans can't be bought inside the app yet." : "Monthly plans can be bought online now; longer plans are coming soon."}</div>}
+        <div className="note">{plan === "owner"
+          ? `Business Pro is for business partners we have verified. Your ${TRIAL_DAYS} free days start the day you're verified.`
+          : `Customer Pass. Your ${TRIAL_DAYS} free days start when you sign up.`} {APP_NAME} only connects customers and businesses; offers are paid to the business directly. <a className="link" href="#/refund">Refund policy</a></div>
       </div>
     </>
   );
 }
 
-// ------------------------------------------------------------------ Login / sign up
-export function Login({ next = "/" }) {
-  const { session, toast, refresh } = useApp();
-  const [tab, setTab] = useState("login");
-  const [f, setF] = useState({ name: "", phone: "", email: "", password: "" });
-  const [consent, setConsent] = useState({ adult: false, agree: false });
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
-  const go = () => navigate(next || "/", { replace: true });
-
-  if (session) { setTimeout(go, 0); return <Spinner />; }
-
-  const submit = async (e) => {
-    e.preventDefault();
-    setErr("");
-    if (!/^\S+@\S+\.\S+$/.test(f.email)) return setErr("Please enter a valid email");
-    if (tab === "reset") {
-      setBusy(true);
-      try { await api.resetPassword(f.email); toast("Password reset link sent to your email"); setTab("login"); } catch (x) { setErr(errText(x)); }
-      setBusy(false); return;
-    }
-    if (f.password.length < 6) return setErr("Password must be at least 6 characters");
-    if (tab === "signup") {
-      if (!f.name.trim()) return setErr("Please enter your name");
-      if (!validPhone(f.phone)) return setErr("Please enter a valid Indian mobile number (+91)");
-      if (!consent.adult) return setErr("You must be 18 or older to use " + APP_NAME);
-      if (!consent.agree) return setErr("Please read and agree to the privacy notice to continue");
-    }
-    setBusy(true);
-    try {
-      if (tab === "login") await api.signIn(f.email, f.password);
-      else {
-        const r = await api.signUp({ email: f.email.trim(), password: f.password, name: f.name.trim(), phone: f.phone.trim(), consent: consentPayload(consent) });
-        if (r?.needsConfirmation) { toast("Check your email to confirm your account"); setBusy(false); setTab("login"); return; }
-        await refresh();
-      }
-      toast(tab === "login" ? "Welcome back!" : `Welcome to ${APP_NAME}!`);
-    } catch (x) { setErr(errText(x)); }
-    setBusy(false);
-  };
-
-  const demoLogin = async (a) => { setBusy(true); try { await api.signIn(a.email, a.password); } catch (x) { setErr(errText(x)); } setBusy(false); };
-
-  return (
-    <div style={{ minHeight: "100vh" }}>
-      <div className="hdr" style={{ padding: "34px 20px 26px" }}>
-        <div className="brand"><span className="logo">L</span>{APP_NAME}{IS_OWNER_APP ? " Business" : ""}</div>
-        <p style={{ opacity: .8, margin: "14px 0 0", lineHeight: 1.5 }}>{IS_OWNER_APP
-          ? "Turn empty rooms, halls, seats, slots and leftover stock into sales. Post an offer in a minute and get calls from customers nearby."
-          : "Last-minute offers from businesses near you: rooms, halls, seats, food, slots and more. Talk to the owner directly."}</p>
-      </div>
-      {tab !== "reset" && <div className="tabs" style={{ marginTop: 16 }}>
-        <button className={tab === "login" ? "on" : ""} onClick={() => { setTab("login"); setErr(""); }}>Log in</button>
-        <button className={tab === "signup" ? "on" : ""} onClick={() => { setTab("signup"); setErr(""); }}>Sign up</button>
-      </div>}
-      <form className="form" onSubmit={submit} style={{ paddingTop: tab === "reset" ? 20 : 4 }}>
-        {tab === "reset" && <div><h2 className="title" style={{ fontSize: 19 }}>Reset password</h2><div className="muted">We'll email you a link to set a new password.</div></div>}
-        {tab === "signup" && <>
-          <div className="fld"><label>Your name</label><input autoComplete="name" value={f.name} onChange={(e) => set("name", e.target.value)} /></div>
-          <div className="fld"><label>Mobile number (India)</label><input inputMode="tel" autoComplete="tel" value={f.phone} onChange={(e) => set("phone", e.target.value)} placeholder="+91 98765 43210" /></div>
-        </>}
-        <div className="fld"><label>Email</label><input type="email" autoComplete="email" value={f.email} onChange={(e) => set("email", e.target.value)} /></div>
-        {tab !== "reset" && <div className="fld"><label>Password</label><input type="password" autoComplete={tab === "login" ? "current-password" : "new-password"} value={f.password} onChange={(e) => set("password", e.target.value)} /></div>}
-        {tab === "signup" && <>
-          <details className="box small"><summary style={{ cursor: "pointer", fontWeight: 600 }}>What we collect and why</summary>
-            {NOTICE_ITEMS.map((n) => <div key={n.data} style={{ paddingTop: 6 }}><b>{n.data}</b><div className="muted">{n.why}</div></div>)}</details>
-          <ConsentBoxes value={consent} onChange={setConsent} />
-        </>}
-        {err && <div className="error">{err}</div>}
-        <button className="btn main" disabled={busy}>{busy ? "Please wait…" : tab === "login" ? "Log in" : tab === "signup" ? "Create account" : "Send reset link"}</button>
-        {tab === "login" && <button type="button" className="link" onClick={() => setTab("reset")}>Forgot password?</button>}
-        {tab === "reset" && <button type="button" className="link" onClick={() => setTab("login")}>Back to log in</button>}
-        {tab === "signup" && <div className="note" style={{ marginTop: 0 }}>{APP_NAME} is available in India only.</div>}
-      </form>
-      {!isLive && (
-        <div className="pad">
-          <div className="label-up" style={{ padding: "0 0 8px" }}>Demo accounts (demo mode only)</div>
-          {DEMO_ACCOUNTS.map((a) => <button key={a.email} className="btn ghost" style={{ marginBottom: 8, justifyContent: "space-between" }} disabled={busy} onClick={() => demoLogin(a)}><span>{a.label}</span><span className="muted small">{a.email}</span></button>)}
-        </div>
-      )}
-      {!IS_OWNER_APP && <div className="pad center"><a className="link" href="#/">← Browse offers without logging in</a></div>}
-      <div className="center small muted" style={{ paddingBottom: 24 }}>
-        <a href="#/terms">Terms</a> · <a href="#/privacy">Privacy</a> · <a href="#/refund">Refunds</a> · <a href="#/contact">Contact</a> · <a href="#/delete-account">Delete account</a>
-      </div>
-    </div>
-  );
-}
+export { Login } from "./auth.jsx";
 
 // ------------------------------------------------------------------ Legal & help
 export function Help() {
@@ -184,11 +109,11 @@ export function Refund() {
         <h1 className="title">Refund & cancellation policy</h1>
         <p className="muted">Template text: have a lawyer review it before launch.</p>
         <h2>Subscriptions</h2>
-        <p>The Customer Pass ({rupee(PLANS.customer.price)}/month) and Owner Pro ({rupee(PLANS.owner.price)}/month) are monthly subscriptions that renew automatically through UPI AutoPay, card or net-banking mandates.</p>
+        <p>Every account gets {TRIAL_DAYS} days free: customers from sign-up, businesses from the day we verify them. After that, the Customer Pass costs {rupee(PLANS.customer.price)}/month and Business Pro (for verified business partners) {rupee(PLANS.owner.price)}/month, with lower monthly prices on 3, 6 and 12-month plans ({PLANS.customer.options.map((o) => `${planLabel(o.months)} ${rupee(o.price)}`).join(", ")} for customers; {PLANS.owner.options.map((o) => `${planLabel(o.months)} ${rupee(o.price)}`).join(", ")} for businesses). You are never charged without choosing a plan and confirming the payment.</p>
         <h2>Cancelling</h2>
-        <p>You can cancel anytime in Account. Cancelling stops the next renewal and cancels the mandate; your plan stays active until the end of the month you already paid for.</p>
+        <p>You can cancel anytime in Account. Cancelling stops the next renewal and cancels the mandate; your plan stays active until the end of the period you already paid for.</p>
         <h2>Refunds</h2>
-        <p>Fees already paid are not refunded for partial months. If you were charged by mistake (for example a duplicate charge, or a renewal after you cancelled), contact us within 7 days and we will refund the full amount to the original payment method within 7 working days.</p>
+        <p>Fees already paid are not refunded for unused time. If you were charged by mistake (for example a duplicate charge, or a renewal after you cancelled), contact us within 7 days and we will refund the full amount to the original payment method within 7 working days.</p>
         <h2>Offers and deals</h2>
         <p>{APP_NAME} does not sell, collect payment for, or deliver any offer listed in the app. Payments for offers are made directly to the business, so refunds for offers must be requested from that business.</p>
         <h2>Contact</h2>
@@ -243,7 +168,7 @@ function PaymentsSwitch({ data, setData, toast }) {
     <div className={"status " + (data.freeMode ? "ok" : "no")}>
       <span style={{ fontSize: 24 }}>{data.freeMode ? "🎉" : "💳"}</span>
       <div className="grow"><b>{data.freeMode ? "Free launch mode is ON" : "Payments are ON"}</b>
-        <div className="muted small">{data.freeMode ? "Everyone who logs in can see numbers and post offers. No subscriptions." : "Customers need the Customer Pass and owners need Owner Pro."}</div></div>
+        <div className="muted small">{data.freeMode ? "Everyone who logs in can see numbers and post offers. No subscriptions." : "Customers need the Customer Pass and owners need Business Pro."}</div></div>
       <button className="btn ghost sm" disabled={busy} onClick={flip}>{busy ? "…" : data.freeMode ? "Turn payments on" : "Make it free"}</button>
     </div>
   );
@@ -266,7 +191,7 @@ function AdminOverview({ toast, go }) {
       {!data.freeMode && <div className="plan" style={{ padding: 16, marginTop: 4 }}>
         <div style={{ opacity: .75, fontSize: 13 }}>Monthly recurring revenue (active plans)</div>
         <div className="amt" style={{ fontSize: 32 }}>{rupee(mrr)}</div>
-        <div style={{ opacity: .75, fontSize: 12.5 }}>{t.customers} Customer Pass × {rupee(PLANS.customer.price)} + {t.owners} Owner Pro × {rupee(PLANS.owner.price)}</div>
+        <div style={{ opacity: .75, fontSize: 12.5 }}>{t.customers} Customer Pass × {rupee(PLANS.customer.price)} + {t.owners} Business Pro × {rupee(PLANS.owner.price)}</div>
       </div>}
       <div className="kpis">
         <Kpi n={t.users} l="Registered users" onClick={() => go("users")} />
@@ -409,7 +334,7 @@ function AdminUsers({ toast }) {
           <div className="muted small">{u.email} · {u.phone ? prettyPhone(u.phone) : "no phone"}{u.createdAt ? " · joined " + day(u.createdAt) : ""}</div>
           <div className="gap" style={{ marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
             <span className="small">Customer Pass:</span> {plan(u.customer)}
-            <span className="small">Owner Pro:</span> {plan(u.owner)}
+            <span className="small">Business Pro:</span> {plan(u.owner)}
           </div>
           {u.business && <div className="muted small" style={{ marginTop: 6 }}>🏪 {u.business.name} · {u.business.city}, {u.business.state} · {u.business.status}</div>}
         </div>
@@ -429,11 +354,12 @@ function AdminPlans({ toast }) {
   };
   return (
     <div className="form">
-      <div className="muted">Activate or extend a plan manually, e.g. for testers or when someone paid outside the app. Set months to 0 to end a plan.</div>
+      <div className="muted">Activate or extend a plan by hand, e.g. for testers or when someone paid outside the app.</div>
       <div className="fld"><label>User's email</label><input type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} /></div>
       <div className="two">
         <div className="fld"><label>Plan</label><select value={f.plan} onChange={(e) => setF({ ...f, plan: e.target.value })}><option value="customer">{PLANS.customer.name}</option><option value="owner">{PLANS.owner.name}</option></select></div>
-        <div className="fld"><label>Months</label><input type="number" min="0" max="24" value={f.months} onChange={(e) => setF({ ...f, months: e.target.value })} /></div>
+        <div className="fld"><label>Length</label><select value={f.months} onChange={(e) => setF({ ...f, months: e.target.value })}>
+          {[1, 3, 6, 12].map((m) => <option key={m} value={m}>{planLabel(m)} ({rupee(PLANS[f.plan].options.find((o) => o.months === m).price)})</option>)}<option value={0}>End the plan now</option></select></div>
       </div>
       <button className="btn dark" disabled={busy || !f.email} onClick={submit}>{busy ? "Saving…" : "Apply"}</button>
     </div>

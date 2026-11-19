@@ -12,6 +12,11 @@ gcloud config set project "$PROJECT" >/dev/null
 echo "== 1. APIs (Cloud Tasks queue, monitoring, backups)"
 gcloud services enable cloudtasks.googleapis.com monitoring.googleapis.com logging.googleapis.com firestore.googleapis.com clouderrorreporting.googleapis.com
 
+echo "== 1b. Let Cloud Functions create sign-in tokens (needed for one-time-code login)"
+PROJECT_NUMBER=$(gcloud projects describe "$PROJECT" --format="value(projectNumber)")
+SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+gcloud iam service-accounts add-iam-policy-binding "$SA" --member="serviceAccount:$SA" --role="roles/iam.serviceAccountTokenCreator" >/dev/null && echo "   ok: $SA"
+
 echo "== 2. Database backups: daily backup kept 7 days + point-in-time recovery (7 days)"
 gcloud firestore databases update --database="$DB" --enable-pitr || true
 if ! gcloud firestore backups schedules list --database="$DB" --format="value(name)" | grep -q .; then

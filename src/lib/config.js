@@ -28,18 +28,24 @@ export const MAX_CATEGORIES = 3;
 export const GRIEVANCE_TYPES = ["Offer or business", "My account or data (privacy)", "A review", "Payments or plans", "Something else"];
 export const REVIEW_REPORT_REASONS = ["Fake or paid review", "Abusive or hateful", "Personal information", "Not about this business", "Something else"];
 
-// Prices shown in the app. The amount actually charged comes from the Razorpay plans
-// (RAZORPAY_PLAN_CUSTOMER / RAZORPAY_PLAN_OWNER), so keep both in sync.
+// Plans. Everyone gets a free month first: customers from sign-up, businesses from the day they're verified.
+// After that: Customer Pass from ₹149/month, Business Pro (for verified business partners) from ₹499/month.
+// Longer plans cost less per month. Payments are not live yet; nobody is charged until they are switched on.
+export const TRIAL_DAYS = 30;
 export const PLANS = {
   customer: {
-    id: "customer", name: "Customer Pass", price: 49,
-    perks: ["See every owner's phone number", "Call or WhatsApp owners directly", "Share your number with owners in one tap", "Keep a list of owners you contacted"],
+    id: "customer", name: "Customer Pass", price: 149,
+    options: [{ months: 1, price: 149 }, { months: 3, price: 399 }, { months: 6, price: 749 }, { months: 12, price: 1399 }],
+    perks: ["See every business's phone number", "Call or WhatsApp businesses directly", "Share your number in one tap", "Keep a list of businesses you contacted"],
   },
   owner: {
-    id: "owner", name: "Owner Pro", price: 499,
-    perks: ["Post unlimited offers", "Get customers' numbers when they're interested", "Shown to every customer nearby", "See views and leads for each offer"],
+    id: "owner", name: "Business Pro", price: 499,
+    options: [{ months: 1, price: 499 }, { months: 3, price: 1349 }, { months: 6, price: 2499 }, { months: 12, price: 4499 }],
+    perks: ["Post unlimited offers", "Get customers' numbers when they're interested", "Shown to customers within 30 km", "Views, leads and reviews for every offer"],
   },
 };
+export const planLabel = (m) => (m === 12 ? "1 year" : `${m} month${m > 1 ? "s" : ""}`);
+export const savePct = (plan, o) => Math.round((1 - o.price / (PLANS[plan].price * o.months)) * 100);
 
 // Default map centre when the user doesn't share location.
 export const DEFAULT_LOCATION = { lat: 12.9716, lng: 77.5946, label: "Bengaluru" };

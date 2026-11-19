@@ -3,6 +3,7 @@ import { initializeApp } from "firebase/app";
 import {
   getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword,
   sendPasswordResetEmail, signOut as fbSignOut, updateProfile as fbUpdateProfile,
+  RecaptchaVerifier, signInWithPhoneNumber, signInWithCustomToken,
 } from "firebase/auth";
 import {
   getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager, doc, getDoc, getDocs, setDoc, updateDoc, addDoc, collection, query, where, orderBy, limit,
@@ -64,6 +65,12 @@ const ERR = {
   "auth/invalid-email": "Please enter a valid email",
   "auth/too-many-requests": "Too many attempts. Try again in a few minutes",
   "auth/network-request-failed": "No internet connection",
+  "auth/invalid-verification-code": "That code is not right. Check it and try again.",
+  "auth/code-expired": "This code has expired. Ask for a new one.",
+  "auth/invalid-phone-number": "Please enter a valid Indian mobile number",
+  "auth/quota-exceeded": "Too many codes sent. Try again later or use e-mail.",
+  "auth/captcha-check-failed": "Security check failed. Please try again.",
+  "auth/operation-not-allowed": "Mobile login isn't switched on yet. Please use e-mail.",
 };
 const nice = (e) => new Error(ERR[e?.code] || e?.message?.replace(/^Firebase: /, "").replace(/ \(.*\)\.?$/, "") || "Something went wrong");
 // Cloud Functions are named lp<Name> (e.g. lpCreateOffer) to keep them apart from other apps in the project.
@@ -87,6 +94,7 @@ const mapSub = (d) => d && ({
   active: ["active", "cancelled"].includes(d.status) && ms(d.currentPeriodEnd) > Date.now(),
 });
 const mapBiz = (id, d, c) => ({
+  trialEndsAt: ms(d.trialEndsAt) || (d.status === "verified" ? (ms(d.reviewedAt) || ms(d.createdAt) || Date.now()) + 30 * 86400000 : null),
   id, ownerId: d.ownerId, name: d.name, category: d.category, categories: d.categories?.length ? d.categories : [d.category || "other"], rating: d.rating || null, about: d.about || "", address: d.address || "", area: d.area || "",
   city: d.city || "", state: d.state || "", pincode: d.pincode || "", lat: d.lat ?? null, lng: d.lng ?? null, status: d.status, statusNote: d.statusNote || "",
   createdAt: ms(d.createdAt), phone: c?.phone || "", whatsapp: c ? c.whatsapp !== false : true,
@@ -129,18 +137,50 @@ export const api = {
       return { needsConfirmation: false };
     } catch (e) { throw nice(e); }
   },
+  // ---------- one-time codes ----------
+  async sendPhoneOtp(phone) {
+    const auth = F().auth;
+    try {
+      if (!this._recaptcha) this._recaptcha = new RecaptchaVerifier(auth, "otp-captcha", { size: "invisible" });
+      this._confirm = await signInWithPhoneNumber(auth, indianPhone(phone), this._recaptcha);
+    } catch (e) { try { this._recaptcha?.clear(); } catch { /* ignore */ } this._recaptcha = null; throw nice(e); }
+  },
+  async verifyPhoneOtp(code) {
+    if (!this._confirm) throw new Error("Ask for a code first");
+    try { await this._confirm.confirm(code); } catch (e) { throw nice(e); }
+    const r = await call("completePhoneLogin", {});
+    if (r.token) await signInWithCustomToken(F().auth, r.token);
+    return { isNew: !!r.isNew };
+  },
+  async sendEmailOtp(email) { await call("sendEmailOtp", { email }); },
+  async verifyEmailOtp(email, code) {
+    const r = await call("verifyEmailOtp", { email, code });
+    try { await signInWithCustomToken(F().auth, r.token); } catch (e) { throw nice(e); }
+    return { isNew: !!r.isNew };
+  },
+  // first time after a one-time-code login: save name, contact details and consent
+  async completeProfile({ name, phone, email, consent }) {
+    const id = await uid();
+    const u = F().auth.currentUser;
+    await setDoc(doc(F().db, "users", id), {
+      name, nameLower: name.toLowerCase(), phone: u.phoneNumber || indianPhone(phone) || phone, email: (u.email || email || "").trim(),
+      role: "user", createdAt: serverTimestamp(),
+    });
+    await fbUpdateProfile(u, { displayName: name }).catch(() => {});
+    await call("recordConsent", { kind: "user", version: CONSENT_VERSION, adult: !!consent.adult, items: consent.items || [] });
+  },
   async resetPassword(email) { try { await sendPasswordResetEmail(F().auth, email.trim()); } catch (e) { throw nice(e); } },
   async signOut() { await fbSignOut(F().auth); },
   async getProfile() {
     const id = await uid();
     const s = await getDoc(doc(F().db, "users", id));
-    const d = s.exists() ? s.data() : {};
-    if (!s.exists()) { // profile missing (e.g. created outside the app): create it
-      const u = F().auth.currentUser;
-      await setDoc(doc(F().db, "users", id), { name: u.displayName || "", nameLower: (u.displayName || "").toLowerCase(), phone: "", email: u.email, role: "user", createdAt: serverTimestamp() });
-    }
+    const u = F().auth.currentUser;
+    // new one-time-code logins have no profile yet: the app asks for their details and consent first
+    if (!s.exists()) return { id, needsProfile: true, name: u.displayName || "", phone: u.phoneNumber || "", email: u.email || "", role: "user", regions: [] };
+    const d = s.data();
     return {
-      id, name: d.name || "", phone: d.phone || "", email: d.email || F().auth.currentUser.email, role: d.role || "user", regions: d.regions || [],
+      trialEndsAt: ms(d.trialEndsAt) || (ms(d.createdAt) || Date.now()) + 30 * 86400000,
+      id, name: d.name || "", phone: d.phone || "", email: d.email || u.email || "", role: d.role || "user", regions: d.regions || [],
       consentVersion: d.consent?.version || null, partnerConsentVersion: d.partnerConsent?.version || null,
     };
   },

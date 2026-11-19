@@ -3,7 +3,7 @@ import { api } from "../api/index.js";
 import { Empty, NeedLogin, OfferCard, PlanCard, Sheet, Spinner, Toggle } from "../components.jsx";
 import { APP_NAME, CATEGORIES, CONSENT_VERSION, DURATIONS, EMOJIS, INDIAN_STATES, IS_OWNER_APP, MAJOR_CITIES, MAX_CATEGORIES, PLANS, RETENTION, TEMPLATES, TINTS, categoryOf } from "../lib/config.js";
 import { RatingBadge } from "./reviews.jsx";
-import { ago, day, errText, prettyPhone, rupee, telLink, timeLeft, validPhone, waLink } from "../lib/format.js";
+import { ago, day, daysLeft, errText, prettyPhone, rupee, telLink, timeLeft, validPhone, waLink } from "../lib/format.js";
 import { navigate, useApp, useNow } from "../state.jsx";
 import { validPincode } from "../lib/geo.js";
 
@@ -23,11 +23,11 @@ function OwnerPaywall() {
   const { business } = useApp();
   return (
     <>
-      <div className="page-h owner-row"><div className="avatar">{business.name[0]}</div><div><h1 className="title" style={{ fontSize: 20 }}>{business.name}</h1><div className="muted">Owner account · {business.area}</div></div></div>
-      <div className="status no"><span style={{ fontSize: 24 }}>🔒</span><div><b>Subscribe to post offers</b><div className="muted small">Your offers go live to every customer near you.</div></div></div>
+      <div className="page-h owner-row"><div className="avatar">{business.name[0]}</div><div><h1 className="title" style={{ fontSize: 20 }}>{business.name}</h1><div className="muted">Business account · {business.area}</div></div></div>
+      <div className="status no"><span style={{ fontSize: 24 }}>⏰</span><div><b>Your free month has ended</b><div className="muted small">Pick a plan to keep your offers live for customers within 30 km.</div></div></div>
       <PlanCard plan="owner" />
       <div className="pad">
-        <a className="btn main" href="#/subscribe/owner">Subscribe · {rupee(PLANS.owner.price)}/month</a>
+        <a className="btn main" href="#/plans">See plans · from {rupee(Math.round(PLANS.owner.options[3].price / 12))}/month</a>
         <div className="note">Turn empty rooms, seats, halls, slots and leftover stock into sales instead of losses.</div>
       </div>
     </>
@@ -47,7 +47,7 @@ function StatusBanner() {
 
 // ------------------------------------------------------------------ Dashboard
 export function OwnerDashboard() {
-  const { business, subs, setMode, freeMode } = useApp();
+  const { business, subs, setMode, freeMode, trial } = useApp();
   const [offers, setOffers] = useState(null);
   const [leads, setLeads] = useState(null);
   const now = useNow(30000);
@@ -59,27 +59,54 @@ export function OwnerDashboard() {
   const newLeads = (leads || []).filter((l) => l.status === "new");
   const views = (offers || []).reduce((s, o) => s + (o.views || 0), 0);
 
+  const week = (leads || []).filter((l) => l.createdAt > now - 7 * 86400000);
+  const perDay = [6, 5, 4, 3, 2, 1, 0].map((d) => week.filter((l) => Math.floor((now - l.createdAt) / 86400000) === d).length);
+  const maxDay = Math.max(1, ...perDay);
+  const left = daysLeft(trial?.owner);
+  const hour = new Date().getHours();
+
   return (
     <>
-      <div className="page-h row">
-        <div><div className="muted">Owner dashboard</div><h1 className="title">{business.name}</h1></div>
-        <a className="pill p-ok" href="#/owner/business">{business.status === "verified" ? "✔ Verified" : "Profile"}</a>
+      <div className="bizhero">
+        <div className="row">
+          <div className="owner-row">
+            <div className="avatar">{business.name[0]}</div>
+            <div><div className="small" style={{ color: "var(--hero-muted)", fontWeight: 600 }}>{hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening"}</div>
+              <div style={{ fontWeight: 800, fontSize: 18 }}>{business.name}</div></div>
+          </div>
+          <a className="pill" style={{ background: "rgba(255,255,255,.16)", color: "#fff" }} href="#/owner/business">{business.status === "verified" ? "✔ Verified" : business.status === "pending" ? "⏳ In review" : "Profile"}</a>
+        </div>
+        <div className="row" style={{ alignItems: "flex-end", marginTop: 22 }}>
+          <div>
+            <div className="small" style={{ color: "var(--hero-muted)", fontWeight: 600 }}>Customers interested this week</div>
+            <div className="gap" style={{ alignItems: "baseline", marginTop: 4 }}><span className="big">{leads ? week.length : "…"}</span>
+              <span className="pill" style={{ background: "var(--hi)", color: "var(--hi-ink)" }}>{monthLeads} in 30 days</span></div>
+          </div>
+          <div className="bars" aria-hidden="true">{perDay.map((n, k) => <span key={k} style={{ height: 8 + (n / maxDay) * 56, animationDelay: `${0.1 + k * 0.07}s` }} />)}</div>
+        </div>
+      </div>
+      <div className="kpis three lift">
+        <div className="kpi"><div className="n">{offers ? live.length : "…"}</div><div className="l">Live offers</div></div>
+        <div className="kpi"><div className="n">{views}</div><div className="l">Views</div></div>
+        <div className="kpi"><div className="n">{business.rating?.count ? <>{Number(business.rating.avg).toFixed(1)}<span style={{ color: "#E0A800" }}>★</span></> : "–"}</div><div className="l">{business.rating?.count ? `${business.rating.count} reviews` : "No reviews yet"}</div></div>
       </div>
       <StatusBanner />
-      <div className="plan" style={{ padding: 16, marginTop: 12 }}>
-        <div style={{ opacity: .75, fontSize: 13 }}>Interested customers, last 30 days</div>
-        <div className="amt" style={{ fontSize: 34 }}>{leads ? monthLeads : "…"}</div>
-        <div style={{ opacity: .75, fontSize: 12.5 }}>{views} views on your offers · {freeMode || !subs.owner ? "Free during launch" : `Owner Pro ${subs.owner.status === "cancelled" ? "ends" : "renews"} ${day(subs.owner.currentPeriodEnd)}`}</div>
-      </div>
-      <div className="kpis">
-        <div className="kpi"><div className="n">{offers ? live.length : "…"}</div><div className="l">Live offers</div></div>
-        <div className="kpi"><div className="n">{leads ? newLeads.length : "…"}</div><div className="l">New leads to call</div></div>
-      </div>
-      <div className="pad gap">
-        <a className="btn main" href="#/owner/post">＋ Post an offer</a>
-        <a className="btn dark" href="#/owner/leads">📇 Leads</a>
-      </div>
-      <a className="menu-item" href="#/owner/reviews">⭐ Reviews {business.rating?.count ? <RatingBadge rating={business.rating} /> : <span className="muted small">none yet</span>}<span className="chev">›</span></a>
+      <a className="cta" href="#/owner/post"><span className="plus" aria-hidden="true">＋</span>
+        <span className="grow"><b style={{ display: "block", fontSize: 16 }}>Post an offer</b><span className="small" style={{ color: "#CFC8E8" }}>Goes live to customers within 30 km</span></span><span aria-hidden="true">›</span></a>
+      <a className="banner" style={{ background: "var(--warn-soft)", color: "var(--warn)" }} href="#/plans">🎁 <span>{subs.owner?.active ? `${PLANS.owner.name} active till ${day(subs.owner.currentPeriodEnd)}`
+        : left > 0 ? `Free month: ${left} day${left > 1 ? "s" : ""} left. Then ${rupee(PLANS.owner.price)}/month, or less on longer plans.`
+          : business.status !== "verified" ? `Your free month starts the day we verify you. Then ${rupee(PLANS.owner.price)}/month.`
+            : freeMode ? "Free during launch. We'll tell you before paid plans start." : `Your free month has ended. Plans from ${rupee(Math.round(PLANS.owner.options[3].price / 12))}/month.`}</span></a>
+      {live.length > 0 && <>
+        <div className="sect"><h3>Live now</h3><a className="link small" href="#/owner/offers">All offers</a></div>
+        {live.slice(0, 3).map((o) => (
+          <a className="item" key={o.id} href={"#/offer/" + o.id}>
+            <div className="ic" style={o.photoUrl ? { backgroundImage: `url("${o.photoUrl}")` } : { background: TINTS[o.category] || TINTS.other }}>{!o.photoUrl && o.emoji}</div>
+            <div className="grow"><b className="ellipsis" style={{ display: "block", fontSize: 14 }}>{o.title}</b><div className="muted small">{o.views} views · ends in {timeLeft(o.endsAt - now)}</div></div>
+            <span className={"tm " + (o.endsAt - now < 3600000 ? "hot" : "")}>{timeLeft(o.endsAt - now)}</span>
+          </a>))}
+      </>}
+      <a className="menu-item" style={{ marginTop: 10 }} href="#/owner/reviews">⭐ Reviews {business.rating?.count ? <RatingBadge rating={business.rating} /> : <span className="muted small">none yet</span>}<span className="chev">›</span></a>
       <div className="sect"><h3>Latest interested customers</h3><a className="link small" href="#/owner/leads">See all</a></div>
       {!leads ? <Spinner /> : leads.length === 0
         ? <div className="muted pad" style={{ paddingTop: 0 }}>When a customer taps "Share my number" on your offer, they appear here.</div>

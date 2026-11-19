@@ -49,6 +49,25 @@ Built to follow the **DPDP Act 2023 + DPDP Rules 2025** (most duties apply from 
 - **Your legal details** must be shown in the app. Set these in `.env.production` before launch (as a personal publisher, use your own name and address):
   `VITE_LEGAL_NAME`, `VITE_LEGAL_ADDRESS`, `VITE_GRIEVANCE_OFFICER`, `VITE_GRIEVANCE_EMAIL`, `VITE_GRIEVANCE_PHONE`.
 
+## Login with a one-time code
+
+- **Mobile (SMS):** Firebase phone auth. Turn it on once: Firebase console → Authentication → Sign-in method → **Phone** → Enable. For testing without real SMS, add test numbers there (e.g. +91 99999 00001, code 123456). SMS is billed per message by Google after a small daily free allowance.
+- **E-mail:** `lpSendEmailOtp` mails a 6-digit code (10-minute expiry, 5 tries, 5 codes an hour, 30 s between codes) and `lpVerifyEmailOtp` signs the user in. It needs an SMTP login, for example a Gmail app password:
+  `firebase functions:secrets:set LASTPICK_SMTP_URL` → `smtps://you%40gmail.com:APP_PASSWORD@smtp.gmail.com:465`, and `LASTPICK_MAIL_FROM=LastPick <you@gmail.com>` in `functions/.env.laundry-staging-c0722`. Until then the secret can be `unset`, and the app tells people to use their mobile number.
+- **Existing accounts are kept.** A mobile login with the same number as an older e-mail account signs into that account (`lpCompletePhoneLogin`); an e-mail code signs into the account with that e-mail. E-mail + password login still works ("Have a password?").
+- New accounts fill in name, the other contact detail and consent once (`CompleteProfile`), then their free month starts.
+- `scripts/setup-production.sh` grants the functions' service account **Service Account Token Creator**, which sign-in tokens need.
+
+## Free month and plans
+
+- Customers: 30 days free from sign-up (`users.trialEndsAt`, set by `lpOnUserCreate`). Then Customer Pass ₹149/month, ₹399 for 3 months, ₹749 for 6, ₹1,399 for a year.
+- Businesses: 30 days free from the day an admin verifies them (`businesses.trialEndsAt`). Then Business Pro ₹499/month, ₹1,349 for 3 months, ₹2,499 for 6, ₹4,499 for a year.
+- Prices live in `PLANS` in `src/lib/config.js`. While free launch mode is on, everyone keeps access after their free month.
+
+## Play Store builds
+
+The Android workflow builds, for each app, a test APK and (once the signing secrets exist) a signed **.aab** for Play Console, targeting **API 36**. Add these repository secrets: `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`. Every build gets a new version code (the workflow run number).
+
 ## Payments and Google Play
 
 Google Play's payments policy says digital features sold inside an app (such as a pass that unlocks phone numbers) must use **Google Play Billing**. In India you may offer an outside gateway such as PayU **alongside** Play Billing ("alternative billing"), with a 4% lower Google fee, after enrolling in Play Console and integrating Google's alternative billing APIs. A PayU-only checkout inside the app breaks the policy.

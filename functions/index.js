@@ -7,6 +7,8 @@
 // - Reviews (only customers who contacted the business), owner replies, review reports
 // - Privacy (DPDP Act 2023 / Rules 2025): consent records, data export, account deletion, grievance tickets
 // - Safety: per-user rate limits, a 1-year audit log, Cloud Tasks queue for heavy fan-out jobs
+// - Login: one-time codes by SMS (Firebase phone auth) or e-mail (lpSendEmailOtp / lpVerifyEmailOtp), linked to existing accounts
+// - Free month: 30 days for customers from sign-up, 30 days for businesses from verification
 const crypto = require("crypto");
 const { setGlobalOptions } = require("firebase-functions/v2");
 const { onCall, onRequest, HttpsError } = require("firebase-functions/v2/https");
@@ -36,6 +38,12 @@ const RAZORPAY_KEY_SECRET = defineSecret("LASTPICK_RAZORPAY_KEY_SECRET");
 const RAZORPAY_WEBHOOK_SECRET = defineSecret("LASTPICK_RAZORPAY_WEBHOOK_SECRET");
 
 const PLANS = ["customer", "owner"];
+const TRIAL_DAYS = 30;
+// E-mail one-time codes are sent by SMTP. Set before using e-mail login (see README):
+//   firebase functions:secrets:set LASTPICK_SMTP_URL   e.g. smtps://you%40gmail.com:APP_PASSWORD@smtp.gmail.com:465
+//   LASTPICK_MAIL_FROM in functions/.env              e.g. LastPick <you@gmail.com>
+const SMTP_URL = defineSecret("LASTPICK_SMTP_URL");
+const MAIL_FROM = defineString("LASTPICK_MAIL_FROM", { default: "LastPick <no-reply@lastpick.in>" });
 const MAX_OFFER_MS = 30 * 86400000;
 
 // ---------------------------------------------------------------- helpers
@@ -73,8 +81,21 @@ async function freeMode() {
 function subActive(s) {
   return !!s && ["active", "cancelled"].includes(s.status) && s.currentPeriodEnd && s.currentPeriodEnd.toMillis() > Date.now();
 }
+// End of the free month: customers from sign-up, businesses from the day they were verified.
+async function trialEnd(uid, plan) {
+  const ms = (t) => (t && typeof t.toMillis === "function" ? t.toMillis() : 0);
+  if (plan === "customer") {
+    const u = (await db.doc(`users/${uid}`).get()).data();
+    if (!u) return 0;
+    return ms(u.trialEndsAt) || (ms(u.createdAt) || Date.now()) + TRIAL_DAYS * DAY;
+  }
+  const b = (await db.doc(`businesses/${uid}`).get()).data();
+  if (!b || b.status !== "verified") return 0;
+  return ms(b.trialEndsAt) || (ms(b.reviewedAt) || ms(b.createdAt) || Date.now()) + TRIAL_DAYS * DAY;
+}
 async function planActive(uid, plan) {
   if (await freeMode()) return true;
+  if ((await trialEnd(uid, plan)) > Date.now()) return true;
   const s = await db.doc(`subscriptions/${uid}_${plan}`).get();
   return s.exists && subActive(s.data());
 }
@@ -160,7 +181,7 @@ async function refreshCity(key) {
 const str = (v, max) => (typeof v === "string" ? v.trim().slice(0, max) : "");
 
 // Recompute whether an owner's offers are shown to customers:
-// business verified AND Owner Pro active. Also refresh the business details copied onto offers.
+// business verified AND Business Pro active. Also refresh the business details copied onto offers.
 async function syncOwnerOffers(ownerId) {
   const [biz, active] = await Promise.all([db.doc(`businesses/${ownerId}`).get(), planActive(ownerId, "owner")]);
   const b = biz.exists ? biz.data() : null;
@@ -192,7 +213,8 @@ exports.lpCreateOffer = onCall(async (req) => {
   if (!biz.exists) throw new HttpsError("failed-precondition", "Set up your business first");
   const b = biz.data();
   if (["rejected", "suspended"].includes(b.status)) throw new HttpsError("permission-denied", "Your business is " + b.status);
-  if (!(await planActive(uid, "owner"))) throw new HttpsError("permission-denied", "An active Owner Pro subscription is needed to post offers");
+  // a business waiting for verification may post (offers stay hidden until verified, when its free month starts)
+  if (b.status !== "pending" && !(await planActive(uid, "owner"))) throw new HttpsError("permission-denied", "Your free month has ended. Pick a Business Pro plan to post offers.");
   const contact = await db.doc(`businessContacts/${uid}`).get();
   if (!contact.exists) throw new HttpsError("failed-precondition", "Add your contact number in Business profile first");
   if (!b.city || !b.state || !b.pincode) throw new HttpsError("failed-precondition", "Add your city, state and pincode in Business profile first");
@@ -409,8 +431,19 @@ exports.lpOnSubscriptionWrite = onDocumentWritten({ document: "subscriptions/{su
   await queueOwnerSync(s.userId);
 });
 
+// Every new account gets a free month from sign-up.
+exports.lpOnUserCreate = onDocumentCreated({ document: "users/{uid}", database: DB_ID }, async (event) => {
+  const u = event.data?.data();
+  if (!u || u.trialEndsAt) return;
+  await event.data.ref.set({ trialEndsAt: Timestamp.fromMillis(Date.now() + TRIAL_DAYS * DAY) }, { merge: true });
+});
+
 // Hourly: mark plans whose paid period ended as expired (the safety net for webhooks) and refresh city counters.
 exports.lpExpirePlans = onSchedule("every 60 minutes", async () => {
+  // businesses whose free month just ended: re-check whether their offers stay visible
+  const ended = await db.collection("businesses").where("trialEndsAt", ">", Timestamp.fromMillis(Date.now() - 2 * 3600000))
+    .where("trialEndsAt", "<=", Timestamp.now()).limit(400).get();
+  for (const b of ended.docs) await queueOwnerSync(b.id);
   const due = await db.collection("subscriptions")
     .where("status", "in", ["active", "cancelled"])
     .where("currentPeriodEnd", "<", Timestamp.now())
@@ -490,6 +523,7 @@ exports.lpNightlyCleanup = onSchedule({ schedule: "30 2 * * *", timeZone: "Asia/
   const t = (days) => Timestamp.fromMillis(now - days * DAY);
   const auditDeleted = await deleteWhere(db.collection("auditLog").where("at", "<", t(RETENTION.auditDays)));
   const ratesDeleted = await deleteWhere(db.collection("rateLimits").where("updatedAt", "<", t(2)));
+  await deleteWhere(db.collection("otps").where("expiresAt", "<", Timestamp.now()));
   const deletedAccountsDeleted = await deleteWhere(db.collection("deletedAccounts").where("deletedAt", "<", t(RETENTION.auditDays)));
   const grievancesDeleted = await deleteWhere(db.collection("grievances").where("status", "in", ["resolved", "rejected"]).where("updatedAt", "<", t(RETENTION.closedGrievanceDays)));
   const archiveDeleted = await deleteWhere(db.collection("offerArchive").where("endsAt", "<", t(RETENTION.archiveDays)));
@@ -609,7 +643,10 @@ exports.lpAdminSetBusinessStatus = onCall(async (req) => {
   const b = (await ref.get()).data();
   if (!b) throw new HttpsError("not-found", "Business not found");
   if (!me.canSee(b.state)) throw new HttpsError("permission-denied", "This business is outside your region");
-  await ref.update({ status, statusNote: str(req.data.note, 300), reviewedBy: me.uid, reviewedAt: FieldValue.serverTimestamp() });
+  const patch = { status, statusNote: str(req.data.note, 300), reviewedBy: me.uid, reviewedAt: FieldValue.serverTimestamp() };
+  // the business's free month starts the first time it is verified
+  if (status === "verified" && !b.trialEndsAt) patch.trialEndsAt = Timestamp.fromMillis(Date.now() + TRIAL_DAYS * DAY);
+  await ref.update(patch);
   audit("admin_business_status", { actor: me.uid, businessId, status });
   return { ok: true };
 });
@@ -905,4 +942,84 @@ exports.lpLogClientError = onCall({ maxInstances: 3 }, async (req) => {
     url: str(d.url, 300), app: str(d.app, 20), version: str(d.version, 20), uid: req.auth?.uid || null,
   }));
   return { ok: true };
+});
+
+// ---------------------------------------------------------------- one-time-code login
+// Mobile: the app verifies the number with Firebase phone auth (SMS), then calls lpCompletePhoneLogin, which links it
+// to an existing account with the same number (e.g. one made with e-mail + password) instead of creating a duplicate.
+// E-mail: lpSendEmailOtp mails a 6-digit code; lpVerifyEmailOtp checks it and returns a sign-in token for the account.
+const sha = (v) => crypto.createHash("sha256").update(String(v)).digest("hex");
+const normEmail = (e) => String(e || "").trim().toLowerCase();
+const validEmail = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(e) && e.length <= 120;
+
+async function accountForEmail(email) {
+  try { return (await getAuth().getUserByEmail(email)).uid; } catch { /* not an auth e-mail */ }
+  const byProfile = await db.collection("users").where("email", "==", email).limit(1).get();
+  return byProfile.empty ? null : byProfile.docs[0].id;
+}
+
+exports.lpSendEmailOtp = onCall({ secrets: [SMTP_URL] }, async (req) => {
+  const email = normEmail(req.data?.email);
+  if (!validEmail(email)) throw new HttpsError("invalid-argument", "Please enter a valid e-mail address");
+  const ip = req.rawRequest?.headers?.["x-forwarded-for"]?.split(",")[0]?.trim() || req.rawRequest?.ip || "unknown";
+  await rateLimit("ip_" + sha(ip).slice(0, 24), "otpSend", 20, 3600);
+  const ref = db.doc(`otps/${sha("email:" + email)}`);
+  const prev = (await ref.get()).data();
+  const now = Date.now();
+  if (prev && now - prev.sentAt.toMillis() < 30000) throw new HttpsError("resource-exhausted", "Please wait 30 seconds before asking for a new code");
+  const windowStart = prev && now - prev.windowStart.toMillis() < 3600000 ? prev.windowStart.toMillis() : now;
+  const sends = prev && windowStart === prev.windowStart.toMillis() ? prev.sends + 1 : 1;
+  if (sends > 5) throw new HttpsError("resource-exhausted", "Too many codes. Try again in an hour, or use your mobile number");
+  if (!SMTP_URL.value() || SMTP_URL.value() === "unset") throw new HttpsError("failed-precondition", "E-mail codes aren't switched on yet. Please use your mobile number.");
+  const code = String(crypto.randomInt(100000, 1000000));
+  await ref.set({
+    kind: "email", codeHash: sha(code + ":" + email), attempts: 0, sends, windowStart: Timestamp.fromMillis(windowStart),
+    sentAt: Timestamp.fromMillis(now), expiresAt: Timestamp.fromMillis(now + 10 * 60000),
+  });
+  const nodemailer = require("nodemailer");
+  await nodemailer.createTransport(SMTP_URL.value()).sendMail({
+    from: MAIL_FROM.value(), to: email, subject: `${code} is your LastPick code`,
+    text: `Your LastPick code is ${code}. It expires in 10 minutes.\n\nNever share this code. LastPick and businesses will never ask for it.\nIf you didn't ask for it, ignore this e-mail.`,
+    html: `<div style="font-family:Arial,sans-serif;font-size:15px;color:#16171D"><p>Your LastPick code is</p><p style="font-size:32px;font-weight:700;letter-spacing:6px;margin:8px 0">${code}</p><p>It expires in 10 minutes. Never share this code. LastPick and businesses will never ask for it.</p><p style="color:#5E6070;font-size:13px">If you didn't ask for this code, you can ignore this e-mail.</p></div>`,
+  });
+  return { ok: true };
+});
+
+exports.lpVerifyEmailOtp = onCall(async (req) => {
+  const email = normEmail(req.data?.email);
+  const code = String(req.data?.code || "").replace(/\D/g, "");
+  if (!validEmail(email) || code.length !== 6) throw new HttpsError("invalid-argument", "Enter the 6-digit code");
+  const ref = db.doc(`otps/${sha("email:" + email)}`);
+  const d = (await ref.get()).data();
+  if (!d || d.expiresAt.toMillis() < Date.now()) throw new HttpsError("deadline-exceeded", "This code has expired. Ask for a new one.");
+  if (d.attempts >= 5) { await ref.delete(); throw new HttpsError("resource-exhausted", "Too many wrong tries. Ask for a new code."); }
+  if (!sameHex(sha(code + ":" + email), d.codeHash)) {
+    await ref.update({ attempts: FieldValue.increment(1) });
+    throw new HttpsError("permission-denied", "That code is not right. Check it and try again.");
+  }
+  await ref.delete();
+  let uid = await accountForEmail(email);
+  if (uid) { try { await getAuth().updateUser(uid, { emailVerified: true }); } catch { /* profile-only e-mail */ } }
+  else uid = (await getAuth().createUser({ email, emailVerified: true })).uid;
+  const isNew = !(await db.doc(`users/${uid}`).get()).exists;
+  audit("login_email_otp", { actor: uid, isNew });
+  return { token: await getAuth().createCustomToken(uid), isNew };
+});
+
+exports.lpCompletePhoneLogin = onCall(async (req) => {
+  const uid = needAuth(req);
+  const phone = req.auth.token?.phone_number;
+  if (!phone || !/^\+91[6-9]\d{9}$/.test(phone)) throw new HttpsError("failed-precondition", "Please verify an Indian mobile number (+91)");
+  if ((await db.doc(`users/${uid}`).get()).exists) { audit("login_phone_otp", { actor: uid }); return { isNew: false }; }
+  // an older account (e.g. e-mail + password) with this number in its profile: sign in to that one instead
+  const existing = await db.collection("users").where("phone", "==", phone).limit(2).get();
+  const other = existing.docs.find((d) => d.id !== uid);
+  if (other) {
+    await getAuth().deleteUser(uid); // the temporary phone-only login
+    try { await getAuth().updateUser(other.id, { phoneNumber: phone }); } catch (e) { console.warn("link phone", e.message); }
+    audit("login_phone_otp", { actor: other.id, linked: true });
+    return { token: await getAuth().createCustomToken(other.id), isNew: false };
+  }
+  audit("login_phone_otp", { actor: uid, isNew: true });
+  return { isNew: true };
 });

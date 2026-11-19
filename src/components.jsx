@@ -12,7 +12,7 @@ export function Empty({ icon, title, children, action }) {
 export function Countdown({ end }) {
   const now = useNow();
   const ms = end - now;
-  return <span className={"tm " + (ms < 3600000 ? "hot" : "")}>⏱ {timeLeft(ms)}</span>;
+  return <span className={"tm " + (ms < 3600000 ? "hot" : "")}>{timeLeft(ms)}</span>;
 }
 
 export function OfferImage({ offer, className = "top", children }) {
@@ -23,19 +23,18 @@ export function OfferImage({ offer, className = "top", children }) {
 export function OfferCard({ offer, preview = false }) {
   const { location, isCustomer, freeMode } = useApp();
   const km = distanceKm(location, offer.business);
+  const r = offer.business?.rating;
   const body = (
     <>
-      <OfferImage offer={offer}>
-        <span className="off">{discount(offer)}% OFF</span>
-        <Countdown end={offer.endsAt} />
-      </OfferImage>
+      <OfferImage offer={offer}><span className="off">-{discount(offer)}%</span></OfferImage>
       <div className="body">
         <div className="t">{offer.title}</div>
-        <div className="s">{offer.business?.name}{offer.business?.rating?.count ? <> <span style={{ color: "#f5a524" }}>★</span>{Number(offer.business.rating.avg).toFixed(1)}</> : null} · {offer.business?.area}{km != null && km < 100 ? " · " + kmText(km) : ""}</div>
+        <div className="s">{offer.business?.name}{r?.count ? <> · <span className="star">★ {Number(r.avg).toFixed(1)}</span></> : null} · {offer.business?.area}{km != null && km < 100 ? " · " + kmText(km) : ""}</div>
         <div className="foot">
           <div className="price"><b>{rupee(offer.price)}</b><s>{rupee(offer.origPrice)}</s></div>
-          {isCustomer || preview ? <span className="pill p-ok">📞 Number visible</span> : <span className="pill p-mute">{freeMode ? "🔑 Log in for number" : "🔒 Number locked"}</span>}
+          <Countdown end={offer.endsAt} />
         </div>
+        {!(isCustomer || preview) && <div className="lock">{freeMode ? "🔑 Log in for number" : "🔒 Number locked"}</div>}
       </div>
     </>
   );
