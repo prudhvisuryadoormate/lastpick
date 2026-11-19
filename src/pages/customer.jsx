@@ -4,6 +4,7 @@ import { BackButton, CategoryChips, Countdown, Disclaimer, Empty, MapView, NeedL
 import { APP_NAME, CATEGORIES, IS_CUSTOMER_APP, IS_OWNER_APP, MAJOR_CITIES, PLANS, REPORT_REASONS, TINTS, WEBSITE_URL, cityKey } from "../lib/config.js";
 import { ago, day, discount, distanceKm, errText, kmText, prettyPhone, rupee, telLink, timeLeft, validPhone, waLink } from "../lib/format.js";
 import { navigate, nearestCity, useApp, useNow } from "../state.jsx";
+import { RADIUS_OPTIONS, validPincode } from "../lib/geo.js";
 
 function useLiveOffers(city) {
   const [offers, setOffers] = useState(null);
@@ -19,8 +20,63 @@ function useLiveOffers(city) {
   return { offers, error };
 }
 
+// Offers for the area the customer chose: within N km of them, in a pincode, or a whole city.
+function useAreaOffers() {
+  const { area, location, locationStatus, city } = useApp();
+  const [offers, setOffers] = useState(null);
+  const [error, setError] = useState("");
+  const needGps = area.mode === "near" && !location.exact;
+  const key = area.mode === "near" ? `near:${area.radius}:${location.lat.toFixed(3)},${location.lng.toFixed(3)}:${location.exact}`
+    : area.mode === "pincode" ? `pin:${area.pincode}` : `city:${city.key}`;
+  useEffect(() => {
+    if (needGps) { setOffers(null); return; }
+    let alive = true;
+    setOffers(null); setError("");
+    const load = () => (area.mode === "near" ? api.listNearby(location.lat, location.lng, area.radius)
+      : area.mode === "pincode" ? api.listByPincode(area.pincode) : api.listLive(city.key))
+      .then((o) => alive && setOffers(o)).catch((e) => alive && setError(errText(e)));
+    load();
+    const i = setInterval(load, 120000);
+    return () => { alive = false; clearInterval(i); };
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+  return { offers, error, needGps, locationStatus };
+}
+
+export function areaLabel(area, city) {
+  if (area.mode === "near") return `Within ${area.radius} km of you`;
+  if (area.mode === "pincode") return `Pincode ${area.pincode}`;
+  return city.name;
+}
+
+// Choose where to see offers: near me (radius), a pincode, or a whole city.
+function AreaSheet({ onClose }) {
+  const { area, setArea, locationStatus } = useApp();
+  const [pin, setPin] = useState(area.mode === "pincode" ? area.pincode : "");
+  const [showCities, setShowCities] = useState(false);
+  if (showCities) return <CityPicker onClose={onClose} onPicked={() => setArea({ mode: "city" })} />;
+  return (
+    <Sheet onClose={onClose}>
+      <h2 className="title" style={{ fontSize: 19 }}>Show offers</h2>
+      <div className="label-up" style={{ padding: "14px 0 6px" }}>Near me</div>
+      {locationStatus === "denied" || locationStatus === "unavailable"
+        ? <div className="banner warn" style={{ margin: 0 }}>Location is off. Allow location for this site/app to see offers near you, or use your pincode below.</div>
+        : <div className="chips" style={{ padding: 0 }}>{RADIUS_OPTIONS.map((r) => (
+          <button key={r} className={"chip " + (area.mode === "near" && area.radius === r ? "on" : "")} onClick={() => { setArea({ mode: "near", radius: r }); onClose(); }}>Within {r} km</button>
+        ))}</div>}
+      <div className="label-up" style={{ padding: "16px 0 6px" }}>In my pincode</div>
+      <form className="gap" onSubmit={(e) => { e.preventDefault(); if (validPincode(pin)) { setArea({ mode: "pincode", pincode: pin.trim() }); onClose(); } }}>
+        <input inputMode="numeric" maxLength={6} value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))} placeholder="6-digit pincode" aria-label="Pincode"
+          style={{ flex: 1, border: "1px solid var(--line)", borderRadius: 12, padding: "11px 12px" }} />
+        <button className="btn dark sm" disabled={!validPincode(pin)}>Show</button>
+      </form>
+      <div className="label-up" style={{ padding: "16px 0 6px" }}>Whole city</div>
+      <button className="btn ghost" onClick={() => setShowCities(true)}>🏙️ Choose a city</button>
+    </Sheet>
+  );
+}
+
 // Pick which city's offers to show. Cities with live offers come first.
-function CityPicker({ onClose }) {
+function CityPicker({ onClose, onPicked }) {
   const { city, setCity, location } = useApp();
   const [list, setList] = useState(null);
   const [q, setQ] = useState("");
@@ -31,7 +87,7 @@ function CityPicker({ onClose }) {
       setList([...map.values()].sort((a, b) => b.liveOffers - a.liveOffers || a.name.localeCompare(b.name)));
     }).catch(() => setList(MAJOR_CITIES.map((m) => ({ key: cityKey(m.name), ...m, liveOffers: 0 }))));
   }, []);
-  const pick = (c) => { setCity({ key: c.key, name: c.name, state: c.state, lat: c.lat, lng: c.lng }); onClose(); };
+  const pick = (c) => { setCity({ key: c.key, name: c.name, state: c.state, lat: c.lat, lng: c.lng }); onPicked?.(); onClose(); };
   const shown = (list || []).filter((c) => !q || `${c.name} ${c.state}`.toLowerCase().includes(q.toLowerCase()));
   return (
     <Sheet onClose={onClose}>
@@ -55,9 +111,10 @@ function CityPicker({ onClose }) {
 
 // ------------------------------------------------------------------ Home
 export function Home() {
-  const { location, isCustomer, session, city } = useApp();
-  const { offers, error } = useLiveOffers(city.key);
+  const { location, isCustomer, session, city, area, setArea, freeMode } = useApp();
+  const { offers, error, needGps, locationStatus } = useAreaOffers();
   const [picking, setPicking] = useState(false);
+  const [pin, setPin] = useState("");
   const now = useNow(30000);
   const [cat, setCat] = useState("all");
   const [q, setQ] = useState("");
@@ -81,41 +138,57 @@ export function Home() {
       <div className="hdr">
         <div className="row">
           <button onClick={() => setPicking(true)} style={{ background: "none", border: 0, color: "#fff", textAlign: "left", padding: 0 }} aria-label="Change city">
-            <div className="loc">Offers in</div><div style={{ fontWeight: 700 }}>📍 {city.name} ▾</div>
+            <div className="loc">Showing offers</div><div style={{ fontWeight: 700 }}>📍 {areaLabel(area, city)} ▾</div>
           </button>
           <a className="logo" href="#/account" aria-label="Account">L</a>
         </div>
         <div className="search">🔎<input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search rooms, halls, food, seats…" aria-label="Search offers" /></div>
       </div>
-      {!isCustomer && (
-        <a className="banner sub" href={session ? "#/subscribe/customer" : "#/login?next=/subscribe/customer"}>
+      {!isCustomer && (freeMode
+        ? <a className="banner sub" href="#/login">🎉<span><b>Free during launch.</b> Log in to see owners' numbers and contact them directly</span></a>
+        : <a className="banner sub" href={session ? "#/subscribe/customer" : "#/login?next=/subscribe/customer"}>
           🔓<span>Subscribe for <b>{rupee(PLANS.customer.price)}/month</b> to see owners' numbers and contact them directly</span>
-        </a>
-      )}
+        </a>)}
+      {needGps && (locationStatus === "asking"
+        ? <div className="banner ok">📍 Finding your location to show offers near you…</div>
+        : <div className="panel" style={{ marginTop: 12 }}>
+          <b>See offers near you</b>
+          <div className="muted small" style={{ margin: "4px 0 10px" }}>Location is off. Allow location access, or enter your pincode.</div>
+          <form className="gap" onSubmit={(e) => { e.preventDefault(); if (validPincode(pin)) setArea({ mode: "pincode", pincode: pin }); }}>
+            <input inputMode="numeric" maxLength={6} value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))} placeholder="6-digit pincode" aria-label="Your pincode"
+              style={{ flex: 1, border: "1px solid var(--line)", borderRadius: 12, padding: "11px 12px" }} />
+            <button className="btn main sm" disabled={!validPincode(pin)}>Show offers</button>
+          </form>
+          <button className="link small" style={{ marginTop: 10 }} onClick={() => setPicking(true)}>Or browse a whole city</button>
+        </div>)}
       <CategoryChips value={cat} onChange={setCat} categories={usedCats.length ? usedCats : CATEGORIES} />
       <div className="sect">
-        <h3>{offers ? `${shown.length} live offer${shown.length === 1 ? "" : "s"}` : "Loading offers"}</h3>
+        <h3>{offers ? `${shown.length} live offer${shown.length === 1 ? "" : "s"}` : needGps ? "Offers near you" : "Loading offers"}</h3>
         <select value={sort} onChange={(e) => setSort(e.target.value)} aria-label="Sort">
           <option value="ending">Ending soon</option><option value="near">Nearest</option><option value="off">Biggest discount</option>
         </select>
       </div>
       {error && <div className="pad"><div className="error">{error}</div></div>}
-      {!offers && !error && <Spinner />}
-      {offers && shown.length === 0 && <Empty icon="🕵️" title={`No live offers in ${city.name} yet`} action={<button className="btn ghost" onClick={() => setPicking(true)}>Choose another city</button>}>Try another category, or check back this evening.</Empty>}
+      {!offers && !error && !needGps && <Spinner />}
+      {offers && shown.length === 0 && <Empty icon="🕵️" title={area.mode === "near" ? `No live offers within ${area.radius} km yet` : area.mode === "pincode" ? `No live offers in ${area.pincode} yet` : `No live offers in ${city.name} yet`}
+        action={<button className="btn ghost" onClick={() => setPicking(true)}>{area.mode === "near" && area.radius < 30 ? "Search a wider area" : "Change area"}</button>}>Try another category, or check back this evening.</Empty>}
       {shown.map((o) => <OfferCard key={o.id} offer={o} />)}
-      {picking && <CityPicker onClose={() => setPicking(false)} />}
+      {picking && <AreaSheet onClose={() => setPicking(false)} />}
     </>
   );
 }
 
 // ------------------------------------------------------------------ Map
 export function MapPage() {
-  const { location, city } = useApp();
-  const { offers } = useLiveOffers(city.key);
-  const center = location.exact && distanceKm(location, city) < 60 ? location : { lat: city.lat ?? location.lat, lng: city.lng ?? location.lng };
+  const { location, city, area } = useApp();
+  const { offers, needGps } = useAreaOffers();
+  const first = offers?.find((o) => o.business?.lat != null)?.business;
+  const center = area.mode === "near" && location.exact ? location
+    : area.mode === "pincode" && first ? first : { lat: city.lat ?? location.lat, lng: city.lng ?? location.lng };
   return (
     <>
-      <div className="page-h"><h1 className="title">Offers in {city.name}</h1><div className="muted">Tap a price to open the offer. Change the city on the Offers tab.</div></div>
+      <div className="page-h"><h1 className="title">Offers {area.mode === "near" ? "near you" : area.mode === "pincode" ? "in " + area.pincode : "in " + city.name}</h1>
+        <div className="muted">{needGps ? "Allow location, or choose a pincode on the Offers tab." : `${areaLabel(area, city)}. Change it on the Offers tab.`}</div></div>
       {offers ? <MapView offers={offers} center={center} /> : <Spinner />}
     </>
   );
@@ -123,7 +196,7 @@ export function MapPage() {
 
 // ------------------------------------------------------------------ Offer detail
 export function OfferPage({ id }) {
-  const { session, profile, isCustomer, location, toast, business } = useApp();
+  const { session, profile, isCustomer, location, toast, business, freeMode } = useApp();
   const [offer, setOffer] = useState(undefined);
   const [contact, setContact] = useState(null);
   const [contactErr, setContactErr] = useState("");
@@ -194,10 +267,15 @@ export function OfferPage({ id }) {
           ) : !session || !isCustomer ? (
             <>
               <div className="num blur" style={{ marginTop: 12 }} aria-hidden="true">+91 98••• •••••</div>
-              <div className="muted" style={{ marginTop: 6 }}>Subscribe to see the owner's number, call or WhatsApp them, and share your number with them.</div>
-              <a className="btn main" style={{ marginTop: 12 }} href={session ? "#/subscribe/customer" : `#/login?next=${encodeURIComponent("/offer/" + offer.id)}`}>
-                🔓 Unlock with {PLANS.customer.name} · {rupee(PLANS.customer.price)}/month
-              </a>
+              {freeMode ? <>
+                <div className="muted" style={{ marginTop: 6 }}>Log in to see the owner's number, call or WhatsApp them, and share your number. Free during launch.</div>
+                <a className="btn main" style={{ marginTop: 12 }} href={`#/login?next=${encodeURIComponent("/offer/" + offer.id)}`}>🔓 Log in to see the number</a>
+              </> : <>
+                <div className="muted" style={{ marginTop: 6 }}>Subscribe to see the owner's number, call or WhatsApp them, and share your number with them.</div>
+                <a className="btn main" style={{ marginTop: 12 }} href={session ? "#/subscribe/customer" : `#/login?next=${encodeURIComponent("/offer/" + offer.id)}`}>
+                  🔓 Unlock with {PLANS.customer.name} · {rupee(PLANS.customer.price)}/month
+                </a>
+              </>}
             </>
           ) : contactErr ? (
             <div className="error" style={{ marginTop: 12 }}>{contactErr}</div>
@@ -295,7 +373,7 @@ export function Account() {
   return <NeedLogin why="Log in to your account"><AccountInner /></NeedLogin>;
 }
 function AccountInner() {
-  const { profile, subs, business, isStaff, refresh, toast, setMode } = useApp();
+  const { profile, subs, business, isStaff, refresh, toast, setMode, freeMode } = useApp();
   const [name, setName] = useState(profile?.name || "");
   const [phone, setPhone] = useState(profile?.phone || "");
   const [saving, setSaving] = useState(false);
@@ -318,7 +396,8 @@ function AccountInner() {
     <>
       <div className="page-h owner-row"><div className="avatar">{(profile?.name || "?")[0]}</div><div><h1 className="title" style={{ fontSize: 20 }}>{profile?.name || "Your account"}</h1><div className="muted">{profile?.email}</div></div></div>
 
-      {["customer", "owner"].map((plan) => {
+      {freeMode && <div className="status ok"><span style={{ fontSize: 24 }}>🎉</span><div className="grow"><b>Free during launch</b><div className="muted small">All features are unlocked. No subscription needed.</div></div></div>}
+      {!freeMode && ["customer", "owner"].map((plan) => {
         const s = subs[plan];
         if (plan === "owner" && (IS_CUSTOMER_APP || (!s && !business))) return null;
         if (plan === "customer" && IS_OWNER_APP) return null;

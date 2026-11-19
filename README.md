@@ -91,6 +91,17 @@ After that, every push to `main` deploys automatically. The one-time setup above
 
 Until then, an admin can switch on plans by hand in **Admin → Plans**, for example after collecting a UPI payment directly.
 
+## Free launch mode (payments on hold)
+
+Until payments are switched on, **everyone who logs in can see owners' numbers and post offers, free**. This is the default when there's no `config/app` document. A super admin switches it in **Admin → Overview → Turn payments on / Make it free**. The server (`lpAdminSetConfig`) then re-checks every owner's offers. While free mode is on, the subscription screens say "Free during launch" and the billing function refuses to charge.
+
+## What customers see: near them only
+
+- **Near me:** offers within **5, 10, 20 or 30 km** of the customer's GPS location (30 km by default). Offers store a `geohash` of the shop's location. The app queries the 9 geohash cells around the customer, then keeps only offers within the exact distance (`src/lib/geo.js`).
+- **Pincode:** offers from businesses in that 6-digit pincode. This is used automatically when location is off.
+- **Whole city:** still available from the picker.
+- Owners must enter their **pincode** and tap **Use my location at the shop**. Without a location, their offers can't appear in "near me".
+
 ## Running at India scale
 
 - **City-based feed.** Customers pick a city (the nearest big city is chosen automatically). Each feed loads only that city's live offers, which keeps database reads and costs low. `cities/{cityKey}` holds live-offer counts per city.
