@@ -77,7 +77,7 @@ After that, every push to `main` deploys automatically. The one-time setup above
 
 1. Create a Razorpay account and complete KYC. Then enable **Subscriptions**.
 2. Create two monthly plans: **Customer Pass ₹49** and **Owner Pro ₹499**. Copy their plan ids (`plan_...`).
-3. Create `functions/.env` (not committed):
+3. Put the Key ID and plan ids in `functions/.env.laundry-staging-c0722` (replace `unset`):
    ```
    LASTPICK_RAZORPAY_KEY_ID=rzp_live_xxxxx
    LASTPICK_RAZORPAY_PLAN_CUSTOMER=plan_xxxxx
