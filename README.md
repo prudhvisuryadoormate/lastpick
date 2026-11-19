@@ -91,6 +91,18 @@ After that, every push to `main` deploys automatically. The one-time setup above
 
 Until then, an admin can switch on plans by hand in **Admin → Plans**, for example after collecting a UPI payment directly.
 
+## Running at India scale
+
+- **City-based feed.** Customers pick a city (the nearest big city is chosen automatically). Each feed loads only that city's live offers, which keeps database reads and costs low. `cities/{cityKey}` holds live-offer counts per city.
+- **Photos.** Each offer stores a small thumbnail (about 2–25 KB) for lists. The full photo lives in `offerPhotos/{offerId}` and loads only on the offer page.
+- **Nightly cleanup** (`lpNightlyCleanup`, 02:30 IST) moves offers that ended more than 7 days ago into a compact `offerArchive` (owners see it under My offers → History) and deletes their photos. It also deletes archive entries after 12 months, leads and contact logs after 6 months, and resolved reports after 12 months. The periods are in `RETENTION` in `src/lib/config.js` and `functions/index.js`.
+- **India only.** Sign-up and business numbers must be Indian (+91 mobile, or landline with STD code). Businesses must pick an Indian state.
+- **Admin team.**
+  - `admin` sees all of India: overview and revenue, businesses, reports, users, plans and team.
+  - `moderator` sees and acts only on the states assigned in **Admin → Team**: verifying businesses and handling reports.
+  - Businesses get automatic red flags: reported 2+ times, a phone number shared with another business, or new in the last 48 h. Offers with 90%+ discounts are flagged too.
+- **Budget alert.** Set one in Google Cloud → Billing → Budgets & alerts.
+
 ## Change prices, name or categories
 
 Edit `src/lib/config.js`: app name, plan prices and perks, categories, templates, support email. When you change a price, change the Razorpay plan amount too.

@@ -1,9 +1,10 @@
 rules_version = '2';
 
 // LastPick Firestore rules.
-// Phone numbers are never readable directly by customers: they come from the revealContact
-// Cloud Function, which checks for an active Customer Pass. Subscriptions, leads and
-// contact logs are written only by Cloud Functions (Admin SDK bypasses these rules).
+// Phone numbers are never readable directly by customers: they come from the lpRevealContact
+// Cloud Function, which checks for an active Customer Pass. Subscriptions, leads, contact logs,
+// photos, archive and city counters are written only by Cloud Functions (Admin SDK bypasses rules).
+// Moderators (role "moderator") work through Cloud Functions that check their regions.
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -24,8 +25,8 @@ service cloud.firestore {
       allow read: if signedIn() && (userId == uid() || isAdmin());
       allow create: if signedIn() && userId == uid()
         && request.resource.data.role == 'user'
-        && request.resource.data.keys().hasOnly(['name', 'phone', 'email', 'role', 'createdAt']);
-      allow update: if signedIn() && ((userId == uid() && onlyChanged(['name', 'phone'])) || isAdmin());
+        && request.resource.data.keys().hasOnly(['name', 'nameLower', 'phone', 'email', 'role', 'createdAt']);
+      allow update: if signedIn() && ((userId == uid() && onlyChanged(['name', 'phone', 'nameLower'])) || isAdmin());
     }
 
     // ---- subscriptions: read own; written only by Cloud Functions ----
@@ -40,8 +41,23 @@ service cloud.firestore {
         && request.resource.data.ownerId == uid()
         && request.resource.data.status == 'pending';
       allow update: if signedIn() && (
-        (bizId == uid() && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'statusNote', 'ownerId']))
+        (bizId == uid() && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'statusNote', 'ownerId', 'reportCount', 'reviewedBy', 'reviewedAt']))
         || isAdmin());
+    }
+
+    // ---- full-size offer photos (thumbnails live on the offer) ----
+    match /offerPhotos/{offerId} {
+      allow read: if true;
+    }
+
+    // ---- compact history of ended offers ----
+    match /offerArchive/{offerId} {
+      allow read: if signedIn() && (resource.data.ownerId == uid() || isAdmin());
+    }
+
+    // ---- live-offer counters per city (for the city picker) ----
+    match /cities/{cityKey} {
+      allow read: if true;
     }
 
     // ---- private contact number of a business: owner and admins only ----

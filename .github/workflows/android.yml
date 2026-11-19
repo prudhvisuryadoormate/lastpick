@@ -1,0 +1,99 @@
+name: Android apps (APK)
+
+# Builds two Android apps from the same web app with Capacitor:
+#   LastPick           (customers)  package in.lastpick.app
+#   LastPick Business  (owners)     package in.lastpick.business
+# Both use the live Firebase backend. The APKs are attached to the "apk-latest" GitHub release.
+on:
+  workflow_dispatch:
+  push:
+    branches: [android-apps, main]
+    paths: ["src/**", "android-assets/**", ".github/workflows/android.yml", "package.json", "index.html", ".env.production"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - variant: customer
+            app_id: in.lastpick.app
+            app_name: LastPick
+          - variant: owner
+            app_id: in.lastpick.business
+            app_name: LastPick Business
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install
+        run: |
+          npm install --no-audit --no-fund
+          npm install --no-save --no-audit --no-fund @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 @capacitor/assets@3
+
+      - name: Build web app (${{ matrix.variant }})
+        run: npm run build
+        env:
+          VITE_APP_VARIANT: ${{ matrix.variant }}
+
+      - name: Create Android project
+        run: |
+          cat > capacitor.config.json <<EOF
+          {
+            "appId": "${{ matrix.app_id }}",
+            "appName": "${{ matrix.app_name }}",
+            "webDir": "dist",
+            "server": { "androidScheme": "https" },
+            "android": { "backgroundColor": "#1b1d3a" }
+          }
+          EOF
+          npx cap add android
+          # location (distance + map) permissions
+          sed -i 's#<uses-permission android:name="android.permission.INTERNET" />#<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />\n    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />#' android/app/src/main/AndroidManifest.xml
+          grep -n "permission" android/app/src/main/AndroidManifest.xml
+
+      - name: App icon and splash
+        run: |
+          mkdir -p assets && cp android-assets/${{ matrix.variant }}/* assets/
+          npx @capacitor/assets generate --android --iconBackgroundColor '#ff5a36' --splashBackgroundColor '#1b1d3a' || echo "Icon generation skipped"
+
+      - name: Build APK
+        run: |
+          npx cap sync android
+          cd android && chmod +x gradlew && ./gradlew assembleDebug --no-daemon
+          cp app/build/outputs/apk/debug/app-debug.apk "$GITHUB_WORKSPACE/LastPick-${{ matrix.variant }}.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LastPick-${{ matrix.variant }}
+          path: LastPick-${{ matrix.variant }}.apk
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: apks
+          merge-multiple: true
+      - name: Publish to the apk-latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          ls -la apks
+          gh release delete apk-latest --yes --cleanup-tag || true
+          gh release create apk-latest apks/LastPick-customer.apk apks/LastPick-owner.apk \
+            --prerelease --target "${{ github.sha }}" --title "Android test builds" \
+            --notes "LastPick-customer.apk = LastPick (customers). LastPick-owner.apk = LastPick Business (owners). Test builds: allow 'Install unknown apps' to install."
