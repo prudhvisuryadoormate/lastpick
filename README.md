@@ -40,7 +40,7 @@ To use your real Firebase project, copy `.env.example` to `.env` and fill in the
 1. In the [Firebase console](https://console.firebase.google.com), create a project **lastpick** and switch it to the **Blaze** plan.
 2. Enable **Authentication → Email/Password**, **Firestore** (location `asia-south1`, production mode) and **Storage**.
 3. **Project settings → Your apps → Add app → Web.** Copy the config into `.env` (local) or GitHub variables (auto-deploy).
-4. Set the project id in `.firebaserc` if it isn't `lastpick`.
+4. Set your project id in `.firebaserc` (currently `laundry-staging-c0722`).
 5. Create the payment secrets once. Use the word `unset` until Razorpay is ready:
    ```bash
    npm i -g firebase-tools && firebase login
