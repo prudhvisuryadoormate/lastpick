@@ -1,0 +1,23 @@
+{
+  "name": "lastpick",
+  "private": true,
+  "version": "1.0.0",
+  "description": "LastPick: businesses post offers on anything they need to move; subscribed customers see the owner's number and contact them directly.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "deploy": "npm run build && firebase deploy"
+  },
+  "dependencies": {
+    "leaflet": "^1.9.4",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "firebase": "^10.14.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.4.8"
+  }
+}
