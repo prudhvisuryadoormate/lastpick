@@ -58,6 +58,11 @@ Built to follow the **DPDP Act 2023 + DPDP Rules 2025** (most duties apply from 
 - New accounts fill in name, the other contact detail and consent once (`CompleteProfile`), then their free month starts.
 - `scripts/setup-production.sh` grants the functions' service account **Service Account Token Creator**, which sign-in tokens need.
 
+## Limits and admin plan controls
+
+- Each business can post **3 offers per day** (India time). `lpCreateOffer` enforces it; Post an offer shows how many are left.
+- Admin → Businesses (super admins): **Unlock plan** (Business Pro for 1, 3, 6 or 12 months), **Extend free time** (+7/15/30/60 days), **End plan**, and **Reject** or **Suspend** any business (`lpAdminBusinessPlan`, `lpAdminSetBusinessStatus`). Moderators can verify, reject and suspend in their states.
+
 ## Free month and plans
 
 - Customers: 30 days free from sign-up (`users.trialEndsAt`, set by `lpOnUserCreate`). Then Customer Pass ₹149/month, ₹399 for 3 months, ₹749 for 6, ₹1,399 for a year.

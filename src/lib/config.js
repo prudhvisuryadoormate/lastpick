@@ -25,6 +25,8 @@ export const LEGAL = {
 export const CONSENT_VERSION = "2026-11-19";
 // A business picks a main category plus up to 2 more, and can post only in those.
 export const MAX_CATEGORIES = 3;
+// Each business can post this many offers per day (India time). Keep in sync with functions/index.js.
+export const POSTS_PER_DAY = 3;
 export const GRIEVANCE_TYPES = ["Offer or business", "My account or data (privacy)", "A review", "Payments or plans", "Something else"];
 export const REVIEW_REPORT_REASONS = ["Fake or paid review", "Abusive or hateful", "Personal information", "Not about this business", "Something else"];
 

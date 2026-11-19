@@ -273,6 +273,8 @@ export const api = {
     if (b.status !== "pending" && !hasPlan(db, u.id, "owner")) throw new Error("Your free month has ended. Pick a Business Pro plan to post offers.");
     if (!(o.price < o.origPrice)) throw new Error("Offer price must be lower than the normal price");
     if (!b.city || !b.state || !b.pincode) throw new Error("Add your city, state and pincode in Business profile first");
+    const dayStart = Math.floor((Date.now() + 5.5 * H) / D) * D - 5.5 * H;
+    if (db.offers.filter((x) => x.businessId === b.id && x.createdAt >= dayStart).length >= 3) throw new Error("You can post 3 offers a day. You can post again after midnight.");
     const allowed = b.categories?.length ? b.categories : [b.category];
     if (!allowed.includes(o.category)) throw new Error("Your business can post only in its registered categories. Add this category in Business profile first.");
     const id = rid();
@@ -400,7 +402,8 @@ export const api = {
       if ((b.reportCount || 0) >= 2) flags.push(`Reported ${b.reportCount}×`);
       if (db.businesses.filter((x) => x.phone === b.phone).length > 1) flags.push("Same phone as another business");
       if (Date.now() - b.createdAt < 2 * D) flags.push("New in last 48 h");
-      return { ...b, flags };
+      const sub = db.subs.find((x) => x.userId === b.ownerId && x.plan === "owner" && x.status === "active" && x.currentPeriodEnd > Date.now());
+      return { ...b, flags, trialEndsAt: b.trialEndsAt || (b.status === "verified" ? b.createdAt + 30 * D : null), planUntil: sub ? sub.currentPeriodEnd : null };
     });
   },
   async setBusinessStatus(id, status, note) {
@@ -526,6 +529,22 @@ export const api = {
     return { ticket };
   },
   async myGrievances() { const db = load(); const u = me(db); return db.grievances.filter((g) => g.userId === u.id); },
+  async adminBusinessPlan(businessId, action, { months, days } = {}) {
+    await wait();
+    const db = load(); staff(db, true);
+    const b = db.businesses.find((x) => x.id === businessId); if (!b) throw new Error("Business not found");
+    let s = db.subs.find((x) => x.userId === b.ownerId && x.plan === "owner");
+    const now = Date.now();
+    if (action === "unlock") {
+      if (!s) { s = { userId: b.ownerId, plan: "owner", provider: "manual" }; db.subs.push(s); }
+      const base = s.status === "active" && s.currentPeriodEnd > now ? s.currentPeriodEnd : now;
+      s.status = "active"; s.currentPeriodEnd = base + months * 30 * D;
+    } else if (action === "extendTrial") {
+      const cur = b.trialEndsAt || (b.status === "verified" ? b.createdAt + 30 * D : 0);
+      b.trialEndsAt = Math.max(now, cur) + days * D;
+    } else if (action === "end") { if (s) { s.status = "expired"; s.currentPeriodEnd = now; } b.trialEndsAt = now; }
+    save(db);
+  },
   async adminGrievances(status = "open") { const db = load(); staff(db, true); return db.grievances.filter((g) => g.status === status).map((g) => ({ ...g, id: g.ticket })); },
   async adminUpdateGrievance(ticket, status, reply) {
     const db = load(); staff(db, true);

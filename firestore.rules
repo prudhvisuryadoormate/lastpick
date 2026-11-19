@@ -44,12 +44,14 @@ service cloud.firestore {
 
     // ---- subscriptions: read own; written only by Cloud Functions ----
     match /subscriptions/{subId} {
-      allow read: if signedIn() && (resource.data.userId == uid() || isAdmin());
+      // by id, so reading a plan that doesn't exist yet (most new accounts) is allowed instead of failing the login
+      allow read: if signedIn() && (subId == uid() + '_customer' || subId == uid() + '_owner' || isAdmin());
     }
 
     // ---- businesses: id = owner's uid. Status is set only by admins. ----
     match /businesses/{bizId} {
-      allow read: if resource.data.status == 'verified' || (signedIn() && (bizId == uid() || isAdmin()));
+      // own business first, so checking for a business that doesn't exist yet never errors
+      allow read: if (signedIn() && bizId == uid()) || resource.data.status == 'verified' || isAdmin();
       allow create: if signedIn() && bizId == uid()
         && request.resource.data.ownerId == uid()
         && request.resource.data.status == 'pending';
@@ -112,7 +114,7 @@ service cloud.firestore {
 
     // ---- reviews: written only by Cloud Functions (lpSubmitReview / lpReplyReview) ----
     match /reviews/{reviewId} {
-      allow read: if resource.data.status == 'published'
+      allow read: if (signedIn() && reviewId.matches('.*_' + uid())) || resource.data.status == 'published'
         || (signedIn() && (resource.data.customerId == uid() || resource.data.businessId == uid() || isAdmin()));
     }
 

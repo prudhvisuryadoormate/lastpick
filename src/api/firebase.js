@@ -71,8 +71,11 @@ const ERR = {
   "auth/quota-exceeded": "Too many codes sent. Try again later or use e-mail.",
   "auth/captcha-check-failed": "Security check failed. Please try again.",
   "auth/operation-not-allowed": "Mobile login isn't switched on yet. Please use e-mail.",
+  "functions/internal": "Something went wrong on our side. Please try again in a minute.",
+  "functions/unavailable": "Can't reach LastPick right now. Check your internet and try again.",
+  "functions/deadline-exceeded": "That took too long. Please try again.",
 };
-const nice = (e) => new Error(ERR[e?.code] || e?.message?.replace(/^Firebase: /, "").replace(/ \(.*\)\.?$/, "") || "Something went wrong");
+const nice = (e) => new Error((e?.code !== "functions/internal" || e?.message === "internal" ? ERR[e?.code] : null) || e?.message?.replace(/^Firebase: /, "").replace(/ \(.*\)\.?$/, "") || "Something went wrong");
 // Cloud Functions are named lp<Name> (e.g. lpCreateOffer) to keep them apart from other apps in the project.
 async function call(name, data) {
   const fn = "lp" + name[0].toUpperCase() + name.slice(1);
@@ -140,8 +143,12 @@ export const api = {
   // ---------- one-time codes ----------
   async sendPhoneOtp(phone) {
     const auth = F().auth;
+    // a fresh invisible reCAPTCHA for every send, so "Resend code" works too
+    try { this._recaptcha?.clear(); } catch { /* ignore */ }
+    const box = document.getElementById("otp-captcha");
+    if (box) box.innerHTML = "";
     try {
-      if (!this._recaptcha) this._recaptcha = new RecaptchaVerifier(auth, "otp-captcha", { size: "invisible" });
+      this._recaptcha = new RecaptchaVerifier(auth, "otp-captcha", { size: "invisible" });
       this._confirm = await signInWithPhoneNumber(auth, indianPhone(phone), this._recaptcha);
     } catch (e) { try { this._recaptcha?.clear(); } catch { /* ignore */ } this._recaptcha = null; throw nice(e); }
   },
@@ -192,8 +199,9 @@ export const api = {
   // ---------- subscriptions ----------
   async mySubscriptions() {
     const id = await uid();
-    const [c, o] = await Promise.all([getDoc(doc(F().db, "subscriptions", id + "_customer")), getDoc(doc(F().db, "subscriptions", id + "_owner"))]);
-    return { customer: c.exists() ? mapSub(c.data()) : null, owner: o.exists() ? mapSub(o.data()) : null };
+    const one = async (k) => { try { const d = await getDoc(doc(F().db, "subscriptions", id + "_" + k)); return d.exists() ? mapSub(d.data()) : null; } catch { return null; } };
+    const [customer, owner] = await Promise.all([one("customer"), one("owner")]);
+    return { customer, owner };
   },
   async subscribe(plan, prefill) {
     const { subscriptionId, keyId } = await call("billing", { action: "create", plan });
@@ -358,6 +366,7 @@ export const api = {
   async resolveReport(id, status, removeOffer = false) { await call("adminResolveReport", { reportId: id, status, removeOffer }); },
   async adminSetPlan(email, plan, months) { await call("adminSetPlan", { email, plan, months }); },
   async adminSetConfig(cfg) { clearCache(); return call("adminSetConfig", cfg); },
+  async adminBusinessPlan(businessId, action, extra = {}) { await call("adminBusinessPlan", { businessId, action, ...extra }); },
   async adminGrievances(status) { return call("adminListGrievances", { status }); },
   async adminUpdateGrievance(ticket, status, reply) { await call("adminUpdateGrievance", { ticket, status, reply }); },
 

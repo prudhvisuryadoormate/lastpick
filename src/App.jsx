@@ -69,11 +69,17 @@ function NewLeadsDot() {
   return n > 0 ? <span className="dot">{n}</span> : null;
 }
 
+function LoadError() {
+  const { refresh } = useApp();
+  return <Empty icon="📶" title="Couldn't load your account" action={<div className="gap" style={{ justifyContent: "center" }}><button className="btn main sm" onClick={refresh}>Try again</button>
+    <button className="btn ghost sm" onClick={async () => { await api.signOut(); navigate("/login"); }}>Log out</button></div>}>Check your internet connection and try again.</Empty>;
+}
+
 export default function App() {
   const { path, query } = useRoute();
   const { loading, mode, setMode, session, profile } = useApp();
   const needsProfile = !!session && !!profile?.needsProfile && !OPEN_PAGES.filter((p) => p !== "/login").includes(path);
-  const needsConsent = !!session && !!profile && !profile.needsProfile && profile.consentVersion !== CONSENT_VERSION && !OPEN_PAGES.includes(path);
+  const needsConsent = !!session && !!profile && !profile.needsProfile && !profile.loadError && profile.consentVersion !== CONSENT_VERSION && !OPEN_PAGES.includes(path);
   const firstVisit = !loading && !session && !IS_OWNER_APP && path === "/" && !welcomed();
   const ownerArea = path.startsWith("/owner");
 
@@ -95,7 +101,7 @@ export default function App() {
   return (
     <div className={"shell" + (biz ? " biz" : "")}>
       {!isLive && <div className="demo-bar">Demo mode · data stays in this browser · no real payments</div>}
-      <main className="main" style={fullScreen ? { paddingBottom: 0 } : null}>{loading ? <Spinner /> : firstVisit ? <Welcome /> : needsProfile ? <CompleteProfile /> : needsConsent ? <ConsentGate /> : <Page path={path} query={query} />}</main>
+      <main className="main" style={fullScreen ? { paddingBottom: 0 } : null}>{loading ? <Spinner /> : profile?.loadError && !OPEN_PAGES.includes(path) ? <LoadError /> : firstVisit ? <Welcome /> : needsProfile ? <CompleteProfile /> : needsConsent ? <ConsentGate /> : <Page path={path} query={query} />}</main>
       {showNav && !needsConsent && (
         <nav className="nav" aria-label="Main">
           {nav.map(([to, icon, label]) => (

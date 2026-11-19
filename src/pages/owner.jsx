@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/index.js";
 import { Empty, NeedLogin, OfferCard, PlanCard, Sheet, Spinner, Toggle } from "../components.jsx";
-import { APP_NAME, CATEGORIES, CONSENT_VERSION, DURATIONS, EMOJIS, INDIAN_STATES, IS_OWNER_APP, MAJOR_CITIES, MAX_CATEGORIES, PLANS, RETENTION, TEMPLATES, TINTS, categoryOf } from "../lib/config.js";
+import { APP_NAME, CATEGORIES, CONSENT_VERSION, DURATIONS, EMOJIS, INDIAN_STATES, IS_OWNER_APP, MAJOR_CITIES, MAX_CATEGORIES, PLANS, POSTS_PER_DAY, RETENTION, TEMPLATES, TINTS, categoryOf } from "../lib/config.js";
 import { RatingBadge } from "./reviews.jsx";
 import { ago, day, daysLeft, errText, prettyPhone, rupee, telLink, timeLeft, validPhone, waLink } from "../lib/format.js";
 import { navigate, useApp, useNow } from "../state.jsx";
@@ -217,6 +217,12 @@ export function OwnerOffers() {
 export function PostOffer() {
   const { business, toast } = useApp();
   const allowed = business?.categories?.length ? business.categories : [business?.category || "other"];
+  const [postedToday, setPostedToday] = useState(null);
+  useEffect(() => {
+    const dayStart = Math.floor((Date.now() + 5.5 * 3600000) / 86400000) * 86400000 - 5.5 * 3600000;
+    api.myOffers().then((l) => setPostedToday(l.filter((o) => o.createdAt >= dayStart).length)).catch(() => setPostedToday(0));
+  }, []);
+  const postsLeft = postedToday == null ? POSTS_PER_DAY : Math.max(0, POSTS_PER_DAY - postedToday);
   const [f, setF] = useState({ category: allowed[0], emoji: "📦", title: "", description: "", origPrice: "", price: "", quantity: "", hours: 6 });
   const [photo, setPhoto] = useState(null); // { file, url } (compressed when posting)
   const [busy, setBusy] = useState(false);
@@ -298,7 +304,10 @@ export function PostOffer() {
       <div style={{ paddingTop: 8 }}><OfferCard offer={preview} preview /></div>
       <div className="pad" style={{ paddingTop: 0 }}>
         {err && <div className="error" style={{ marginBottom: 10 }}>{err}</div>}
-        <button className="btn main" disabled={busy || problems.length > 0} onClick={submit}>{busy ? "Posting…" : "🚀 Make offer live"}</button>
+        <div className={"banner " + (postsLeft > 0 ? "ok" : "warn")} style={{ margin: "0 0 12px" }}>{postsLeft > 0
+          ? `📅 You can post ${postsLeft} more offer${postsLeft > 1 ? "s" : ""} today (${POSTS_PER_DAY} a day).`
+          : `📅 You've posted ${POSTS_PER_DAY} offers today. You can post again after midnight.`}</div>
+        <button className="btn main" disabled={busy || problems.length > 0 || postsLeft === 0} onClick={submit}>{busy ? "Posting…" : "🚀 Make offer live"}</button>
         {problems.length > 0 && <div className="note">Add {problems.join(", ")}.</div>}
         <div className="note">By posting, you confirm this offer is genuine and you will honour it. You are responsible for your offer; {APP_NAME} only connects you with customers.</div>
       </div>

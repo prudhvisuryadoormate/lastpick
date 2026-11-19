@@ -220,7 +220,38 @@ function AdminOverview({ toast, go }) {
   );
 }
 
+// Super-admin plan controls on a business: unlock Business Pro, extend the free month, or end both.
+function BizPlanControls({ b, toast, onDone }) {
+  const [months, setMonths] = useState(1);
+  const [days, setDays] = useState(15);
+  const [busy, setBusy] = useState(false);
+  const run = async (action, extra, msg) => {
+    setBusy(true);
+    try { await api.adminBusinessPlan(b.id, action, extra); toast(msg); onDone(); } catch (e) { toast(errText(e)); }
+    setBusy(false);
+  };
+  return (
+    <div className="box" style={{ marginTop: 10 }}>
+      <div className="small" style={{ fontWeight: 700 }}>Plan</div>
+      <div className="muted small">{[b.planUntil && `${PLANS.owner.name} till ${day(b.planUntil)}`, b.trialEndsAt && b.trialEndsAt > Date.now() && `Free month till ${day(b.trialEndsAt)}`].filter(Boolean).join(" · ")
+        || (b.status === "verified" ? "No active plan" : "Free month starts at verification")}</div>
+      <div className="gap" style={{ marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <select aria-label="Plan length" value={months} onChange={(e) => setMonths(Number(e.target.value))} style={{ border: "1px solid var(--line)", borderRadius: 10, padding: "8px 10px", background: "#fff" }}>
+          {PLANS.owner.options.map((o) => <option key={o.months} value={o.months}>{planLabel(o.months)} ({rupee(o.price)})</option>)}</select>
+        <button className="btn main sm" disabled={busy} onClick={() => run("unlock", { months }, `${PLANS.owner.name} unlocked for ${planLabel(months)}`)}>Unlock plan</button>
+      </div>
+      <div className="gap" style={{ marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <select aria-label="Extend by" value={days} onChange={(e) => setDays(Number(e.target.value))} style={{ border: "1px solid var(--line)", borderRadius: 10, padding: "8px 10px", background: "#fff" }}>
+          {[7, 15, 30, 60].map((d) => <option key={d} value={d}>+{d} days</option>)}</select>
+        <button className="btn ghost sm" disabled={busy} onClick={() => run("extendTrial", { days }, `Free time extended by ${days} days`)}>Extend free time</button>
+        {(b.planUntil || (b.trialEndsAt && b.trialEndsAt > Date.now())) && <button className="btn danger sm" disabled={busy} onClick={() => run("end", {}, "Plan and free time ended")}>End plan</button>}
+      </div>
+    </div>
+  );
+}
+
 function AdminBusinesses({ toast }) {
+  const { isAdmin } = useApp();
   const [list, setList] = useState(null);
   const [status, setStatus] = useState("pending");
   const [state, setState] = useState("");
@@ -247,9 +278,10 @@ function AdminBusinesses({ toast }) {
           <div className="gap" style={{ marginTop: 10, flexWrap: "wrap" }}>
             {b.phone && <a className="btn ghost sm" href={"tel:" + b.phone}>📞 Call to verify</a>}
             {b.status !== "verified" && <button className="btn main sm" onClick={() => act(b, "verified")}>Verify</button>}
-            {b.status === "pending" && <button className="btn ghost sm" onClick={() => act(b, "rejected")}>Reject</button>}
+            {["pending", "verified", "suspended"].includes(b.status) && <button className="btn ghost sm" onClick={() => act(b, "rejected")}>Reject</button>}
             {b.status === "verified" && <button className="btn danger sm" onClick={() => act(b, "suspended")}>Suspend</button>}
           </div>
+          {isAdmin && <BizPlanControls b={b} toast={toast} onDone={load} />}
         </div>
       ))}
     </>

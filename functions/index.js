@@ -39,6 +39,10 @@ const RAZORPAY_WEBHOOK_SECRET = defineSecret("LASTPICK_RAZORPAY_WEBHOOK_SECRET")
 
 const PLANS = ["customer", "owner"];
 const TRIAL_DAYS = 30;
+const POSTS_PER_DAY = 3; // keep in sync with src/lib/config.js
+// midnight today in India (UTC+05:30), as milliseconds
+const IST = 5.5 * 3600000;
+const startOfDayIST = (now = Date.now()) => Math.floor((now + IST) / 86400000) * 86400000 - IST;
 // E-mail one-time codes are sent by SMTP. Set before using e-mail login (see README):
 //   firebase functions:secrets:set LASTPICK_SMTP_URL   e.g. smtps://you%40gmail.com:APP_PASSWORD@smtp.gmail.com:465
 //   LASTPICK_MAIL_FROM in functions/.env              e.g. LastPick <you@gmail.com>
@@ -231,7 +235,10 @@ exports.lpCreateOffer = onCall(async (req) => {
   if (!allowed.includes(category)) {
     throw new HttpsError("permission-denied", "Your business can post only in its registered categories. Add this category in Business profile first.");
   }
-  await rateLimit(uid, "createOffer", 30, 86400);
+  // each business can post up to POSTS_PER_DAY offers per calendar day (India time)
+  const dayStart = startOfDayIST();
+  const today = (await db.collection("offers").where("ownerId", "==", uid).where("createdAt", ">=", Timestamp.fromMillis(dayStart)).count().get()).data().count;
+  if (today >= POSTS_PER_DAY) throw new HttpsError("resource-exhausted", `You can post ${POSTS_PER_DAY} offers a day. You can post again after midnight.`);
   const photoThumb = isDataImage(d.photoThumb, 30000) ? d.photoThumb : null;
   const photo = isDataImage(d.photo, 200000) ? d.photo : null;
   const discount = 1 - price / origPrice;
@@ -251,7 +258,7 @@ exports.lpCreateOffer = onCall(async (req) => {
   await batch.commit();
   await refreshCity(business.cityKey);
   audit("offer_created", { actor: uid, offerId: ref.id, category });
-  return { id: ref.id, visible: b.status === "verified" };
+  return { id: ref.id, visible: b.status === "verified", postsLeftToday: POSTS_PER_DAY - today - 1 };
 });
 
 // ---------------------------------------------------------------- number exchange
@@ -619,6 +626,7 @@ exports.lpAdminListBusinesses = onCall(async (req) => {
   const snap = await q.orderBy("createdAt", "desc").limit(200).get();
   const list = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((b) => me.canSee(b.state));
   const contacts = await Promise.all(list.map((b) => db.doc(`businessContacts/${b.id}`).get()));
+  const subs = await Promise.all(list.map((b) => db.doc(`subscriptions/${b.id}_owner`).get()));
   const phones = contacts.map((c) => c.data()?.phone || "");
   return list.map((b, i) => {
     const dupes = phones.filter((p) => p && p === phones[i]).length;
@@ -631,6 +639,8 @@ exports.lpAdminListBusinesses = onCall(async (req) => {
       id: b.id, name: b.name, category: b.category, categories: b.categories?.length ? b.categories : [b.category], rating: b.rating || null, address: b.address || "", area: b.area || "", city: b.city || "", state: b.state || "",
       lat: b.lat ?? null, lng: b.lng ?? null, status: b.status, statusNote: b.statusNote || "", reportCount: b.reportCount || 0,
       createdAt: b.createdAt?.toMillis?.() || null, phone: phones[i], flags,
+      trialEndsAt: b.trialEndsAt?.toMillis?.() || (b.status === "verified" ? (b.reviewedAt?.toMillis?.() || b.createdAt?.toMillis?.() || 0) + TRIAL_DAYS * DAY : null),
+      planUntil: subs[i].exists && subActive(subs[i].data()) ? subs[i].data().currentPeriodEnd.toMillis() : null,
     };
   });
 });
@@ -1022,4 +1032,36 @@ exports.lpCompletePhoneLogin = onCall(async (req) => {
   }
   audit("login_phone_otp", { actor: uid, isNew: true });
   return { isNew: true };
+});
+
+// ---------------------------------------------------------------- admin: business plans
+// Super admins can unlock Business Pro for a business (1, 3, 6 or 12 months), extend its free month, or end both.
+exports.lpAdminBusinessPlan = onCall(async (req) => {
+  const me = await needAdmin(req);
+  const businessId = str(req.data?.businessId, 128);
+  const action = req.data?.action;
+  const bref = db.doc(`businesses/${businessId}`);
+  const b = (await bref.get()).data();
+  if (!b) throw new HttpsError("not-found", "Business not found");
+  const sref = db.doc(`subscriptions/${businessId}_owner`);
+  const sub = (await sref.get()).data();
+  const now = Date.now();
+  if (action === "unlock") {
+    const months = Number(req.data?.months);
+    if (![1, 3, 6, 12].includes(months)) throw new HttpsError("invalid-argument", "Pick 1, 3, 6 or 12 months");
+    const base = sub && subActive(sub) ? sub.currentPeriodEnd.toMillis() : now;
+    await sref.set({ userId: businessId, plan: "owner", provider: "manual", status: "active", months,
+      currentPeriodEnd: Timestamp.fromMillis(base + months * 30 * DAY), grantedBy: me, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+  } else if (action === "extendTrial") {
+    const days = Number(req.data?.days);
+    if (!(days >= 1 && days <= 90)) throw new HttpsError("invalid-argument", "Extend by 1 to 90 days");
+    const cur = await trialEnd(businessId, "owner");
+    await bref.update({ trialEndsAt: Timestamp.fromMillis(Math.max(now, cur) + days * DAY) });
+  } else if (action === "end") {
+    if (sub) await sref.set({ status: "expired", currentPeriodEnd: Timestamp.fromMillis(now), updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+    await bref.update({ trialEndsAt: Timestamp.fromMillis(now) });
+  } else throw new HttpsError("invalid-argument", "Unknown action");
+  await queueOwnerSync(businessId);
+  audit("admin_business_plan", { actor: me, businessId, action, months: req.data?.months || null, days: req.data?.days || null });
+  return { ok: true };
 });

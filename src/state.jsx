@@ -75,11 +75,18 @@ export function AppProvider({ children }) {
     try {
       const session = await api.getSession();
       if (!session) { setState({ loading: false, session: null, profile: null, subs: { customer: null, owner: null }, business: null }); return; }
-      const [profile, subs, business] = await Promise.all([api.getProfile(), api.mySubscriptions(), api.myBusiness()]);
+      // the profile is required; plans and business are optional, so a problem there never blocks logging in
+      const [profile, subs, business] = await Promise.all([
+        api.getProfile(),
+        api.mySubscriptions().catch((e) => { console.warn("plans", e); return { customer: null, owner: null }; }),
+        api.myBusiness().catch((e) => { console.warn("business", e); return null; }),
+      ]);
       setState({ loading: false, session, profile, subs, business });
     } catch (e) {
       console.error(e);
-      setState((s) => ({ ...s, loading: false }));
+      // logged in but the profile couldn't load (e.g. offline): keep the session so the app doesn't bounce back to Log in
+      const session = await api.getSession().catch(() => null);
+      setState((s) => ({ ...s, loading: false, session, profile: session ? (s.profile || { id: session.user.id, loadError: true, name: "", phone: "", email: session.user.email || "", role: "user", regions: [] }) : null }));
     }
   }, []);
 
