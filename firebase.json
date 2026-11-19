@@ -25,18 +25,18 @@
       }
     ]
   },
-  "firestore": {
-    "rules": "firestore.rules",
-    "indexes": "firestore.indexes.json"
-  },
-  "storage": {
-    "rules": "storage.rules"
-  },
+  "firestore": [
+    {
+      "database": "lastpick",
+      "rules": "firestore.rules",
+      "indexes": "firestore.indexes.json"
+    }
+  ],
   "functions": [
     {
       "source": "functions",
-      "codebase": "default",
-      "runtime": "nodejs20",
+      "codebase": "lastpick",
+      "runtime": "nodejs22",
       "ignore": [
         "node_modules",
         ".git",

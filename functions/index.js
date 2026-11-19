@@ -1,4 +1,4 @@
-// LastPick Cloud Functions (Firebase, 2nd gen, Node 20).
+// LastPick Cloud Functions (Firebase, 2nd gen, Node 22).
 // - Number exchange: revealContact, logContact, shareNumber
 // - Offers: createOffer (server checks the owner's plan and business)
 // - Billing: Razorpay subscriptions (billing) + razorpayWebhook for renewals
@@ -15,18 +15,20 @@ const { getFirestore, FieldValue, Timestamp } = require("firebase-admin/firestor
 const { getAuth } = require("firebase-admin/auth");
 
 initializeApp();
-const db = getFirestore();
+// LastPick uses its own Firestore database ("lastpick") so it never touches other apps in this project.
+const DB_ID = "lastpick";
+const db = getFirestore(DB_ID);
 setGlobalOptions({ region: "asia-south1", maxInstances: 10 });
 
 // Razorpay settings. Set them before going live (see README):
-//   firebase functions:secrets:set RAZORPAY_KEY_SECRET
-//   firebase functions:secrets:set RAZORPAY_WEBHOOK_SECRET
-//   and RAZORPAY_KEY_ID / RAZORPAY_PLAN_CUSTOMER / RAZORPAY_PLAN_OWNER in functions/.env
-const RAZORPAY_KEY_ID = defineString("RAZORPAY_KEY_ID", { default: "unset" });
-const RAZORPAY_PLAN_CUSTOMER = defineString("RAZORPAY_PLAN_CUSTOMER", { default: "unset" });
-const RAZORPAY_PLAN_OWNER = defineString("RAZORPAY_PLAN_OWNER", { default: "unset" });
-const RAZORPAY_KEY_SECRET = defineSecret("RAZORPAY_KEY_SECRET");
-const RAZORPAY_WEBHOOK_SECRET = defineSecret("RAZORPAY_WEBHOOK_SECRET");
+//   firebase functions:secrets:set LASTPICK_RAZORPAY_KEY_SECRET
+//   firebase functions:secrets:set LASTPICK_RAZORPAY_WEBHOOK_SECRET
+//   and LASTPICK_RAZORPAY_KEY_ID / LASTPICK_RAZORPAY_PLAN_CUSTOMER / LASTPICK_RAZORPAY_PLAN_OWNER in functions/.env
+const RAZORPAY_KEY_ID = defineString("LASTPICK_RAZORPAY_KEY_ID", { default: "unset" });
+const RAZORPAY_PLAN_CUSTOMER = defineString("LASTPICK_RAZORPAY_PLAN_CUSTOMER", { default: "unset" });
+const RAZORPAY_PLAN_OWNER = defineString("LASTPICK_RAZORPAY_PLAN_OWNER", { default: "unset" });
+const RAZORPAY_KEY_SECRET = defineSecret("LASTPICK_RAZORPAY_KEY_SECRET");
+const RAZORPAY_WEBHOOK_SECRET = defineSecret("LASTPICK_RAZORPAY_WEBHOOK_SECRET");
 
 const PLANS = ["customer", "owner"];
 const MAX_OFFER_MS = 30 * 86400000;
@@ -83,7 +85,7 @@ async function syncOwnerOffers(ownerId) {
 }
 
 // ---------------------------------------------------------------- offers
-exports.createOffer = onCall(async (req) => {
+exports.lpCreateOffer = onCall(async (req) => {
   const uid = needAuth(req);
   const d = req.data || {};
   const biz = await db.doc(`businesses/${uid}`).get();
@@ -99,7 +101,8 @@ exports.createOffer = onCall(async (req) => {
   if (title.length < 3) throw new HttpsError("invalid-argument", "Title is too short");
   if (!(origPrice > 0) || !(price >= 0) || !(price < origPrice)) throw new HttpsError("invalid-argument", "Offer price must be lower than the normal price");
   if (!(endsAt > Date.now()) || endsAt > Date.now() + MAX_OFFER_MS + 60000) throw new HttpsError("invalid-argument", "Offers can run for up to 30 days");
-  const photoUrl = typeof d.photoUrl === "string" && d.photoUrl.startsWith("https://") ? d.photoUrl : null;
+  // photos are small compressed JPEGs stored inline (data URL, max ~150 KB)
+  const photoUrl = typeof d.photoUrl === "string" && /^data:image\/(jpeg|png|webp);base64,/.test(d.photoUrl) && d.photoUrl.length <= 200000 ? d.photoUrl : null;
 
   const ref = await db.collection("offers").add({
     ownerId: uid, businessId: uid,
@@ -113,7 +116,7 @@ exports.createOffer = onCall(async (req) => {
 });
 
 // ---------------------------------------------------------------- number exchange
-exports.revealContact = onCall(async (req) => {
+exports.lpRevealContact = onCall(async (req) => {
   const uid = needAuth(req);
   const o = await getOffer(req.data?.offerId);
   const own = o.ownerId === uid;
@@ -131,7 +134,7 @@ exports.revealContact = onCall(async (req) => {
   return { phone: c.data().phone, whatsapp: c.data().whatsapp !== false };
 });
 
-exports.logContact = onCall(async (req) => {
+exports.lpLogContact = onCall(async (req) => {
   const uid = needAuth(req);
   if (!(await planActive(uid, "customer"))) return { ok: false };
   const o = await getOffer(req.data?.offerId);
@@ -142,7 +145,7 @@ exports.logContact = onCall(async (req) => {
   return { ok: true };
 });
 
-exports.shareNumber = onCall(async (req) => {
+exports.lpShareNumber = onCall(async (req) => {
   const uid = needAuth(req);
   if (!(await planActive(uid, "customer"))) throw new HttpsError("permission-denied", "Subscribe to the Customer Pass first");
   const o = await getOffer(req.data?.offerId);
@@ -181,7 +184,7 @@ const hmac = (secret, msg) => crypto.createHmac("sha256", secret).update(msg).di
 const sameHex = (a, b) => typeof b === "string" && a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const periodEnd = (currentEnd) => Timestamp.fromMillis(currentEnd ? currentEnd * 1000 : Date.now() + 30 * 86400000);
 
-exports.billing = onCall({ secrets: [RAZORPAY_KEY_SECRET] }, async (req) => {
+exports.lpBilling = onCall({ secrets: [RAZORPAY_KEY_SECRET] }, async (req) => {
   const uid = needAuth(req);
   const { action, plan } = req.data || {};
   if (!PLANS.includes(plan)) throw new HttpsError("invalid-argument", "Unknown plan");
@@ -226,8 +229,8 @@ const WEBHOOK_STATUS = {
   "subscription.completed": "expired",
 };
 
-// Razorpay dashboard -> Webhooks -> URL of this function, same secret as RAZORPAY_WEBHOOK_SECRET.
-exports.razorpayWebhook = onRequest({ secrets: [RAZORPAY_WEBHOOK_SECRET] }, async (req, res) => {
+// Razorpay dashboard -> Webhooks -> URL of this function, same secret as LASTPICK_RAZORPAY_WEBHOOK_SECRET.
+exports.lpRazorpayWebhook = onRequest({ secrets: [RAZORPAY_WEBHOOK_SECRET] }, async (req, res) => {
   const sig = req.get("x-razorpay-signature") || "";
   if (!sameHex(hmac(RAZORPAY_WEBHOOK_SECRET.value(), req.rawBody), sig)) { res.status(400).send("invalid signature"); return; }
   const event = req.body || {};
@@ -250,7 +253,7 @@ exports.razorpayWebhook = onRequest({ secrets: [RAZORPAY_WEBHOOK_SECRET] }, asyn
 
 // ---------------------------------------------------------------- admin
 // Activate or extend a plan by email, e.g. when a payment was collected outside the app. months = 0 ends it.
-exports.adminSetPlan = onCall(async (req) => {
+exports.lpAdminSetPlan = onCall(async (req) => {
   await needAdmin(req);
   const { email, plan } = req.data || {};
   const months = Math.max(0, Math.min(24, Number(req.data?.months) || 0));
@@ -270,14 +273,14 @@ exports.adminSetPlan = onCall(async (req) => {
 });
 
 // ---------------------------------------------------------------- upkeep triggers
-exports.onBusinessWrite = onDocumentWritten("businesses/{ownerId}", async (event) => {
+exports.lpOnBusinessWrite = onDocumentWritten({ document: "businesses/{ownerId}", database: DB_ID }, async (event) => {
   const before = event.data?.before?.data(), after = event.data?.after?.data();
   const keys = ["status", "name", "area", "city", "lat", "lng"];
   if (before && after && keys.every((k) => before[k] === after[k])) return;
   await syncOwnerOffers(event.params.ownerId);
 });
 
-exports.onSubscriptionWrite = onDocumentWritten("subscriptions/{subId}", async (event) => {
+exports.lpOnSubscriptionWrite = onDocumentWritten({ document: "subscriptions/{subId}", database: DB_ID }, async (event) => {
   const after = event.data?.after?.data(), before = event.data?.before?.data();
   const s = after || before;
   if (!s || s.plan !== "owner") return;
@@ -286,7 +289,7 @@ exports.onSubscriptionWrite = onDocumentWritten("subscriptions/{subId}", async (
 });
 
 // Mark plans whose paid period ended as expired (webhooks normally do this; this is the safety net).
-exports.expirePlans = onSchedule("every 60 minutes", async () => {
+exports.lpExpirePlans = onSchedule("every 60 minutes", async () => {
   const due = await db.collection("subscriptions")
     .where("status", "in", ["active", "cancelled"])
     .where("currentPeriodEnd", "<", Timestamp.now())

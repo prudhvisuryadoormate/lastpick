@@ -8,9 +8,9 @@ import {
   getFirestore, doc, getDoc, getDocs, setDoc, updateDoc, addDoc, collection, query, where, orderBy, limit,
   serverTimestamp, increment, Timestamp,
 } from "firebase/firestore";
-import { getStorage, ref as sref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getFunctions, httpsCallable } from "firebase/functions";
 import { APP_NAME, PLANS } from "../lib/config.js";
+import { compressPhoto } from "../lib/image.js";
 
 const env = import.meta.env;
 let fb;
@@ -20,7 +20,8 @@ function F() {
     apiKey: env.VITE_FIREBASE_API_KEY, authDomain: env.VITE_FIREBASE_AUTH_DOMAIN, projectId: env.VITE_FIREBASE_PROJECT_ID,
     storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET, messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID, appId: env.VITE_FIREBASE_APP_ID,
   });
-  fb = { auth: getAuth(app), db: getFirestore(app), storage: getStorage(app), fns: getFunctions(app, env.VITE_FIREBASE_FUNCTIONS_REGION || "asia-south1") };
+  // LastPick has its own Firestore database ("lastpick") inside the Firebase project.
+  fb = { auth: getAuth(app), db: getFirestore(app, "lastpick"), fns: getFunctions(app, env.VITE_FIREBASE_FUNCTIONS_REGION || "asia-south1") };
   return fb;
 }
 
@@ -46,8 +47,10 @@ const ERR = {
   "auth/network-request-failed": "No internet connection",
 };
 const nice = (e) => new Error(ERR[e?.code] || e?.message?.replace(/^Firebase: /, "").replace(/ \(.*\)\.?$/, "") || "Something went wrong");
+// Cloud Functions are named lp<Name> (e.g. lpCreateOffer) to keep them apart from other apps in the project.
 async function call(name, data) {
-  try { return (await httpsCallable(F().fns, name)(data)).data; } catch (e) { throw nice(e); }
+  const fn = "lp" + name[0].toUpperCase() + name.slice(1);
+  try { return (await httpsCallable(F().fns, fn)(data)).data; } catch (e) { throw nice(e); }
 }
 
 const mapOffer = (id, d) => ({
@@ -174,13 +177,7 @@ export const api = {
   async createOffer(o) { return call("createOffer", o); },
   async endOffer(id) { await updateDoc(doc(F().db, "offers", id), { status: "ended" }); },
   async addView(id) { try { await updateDoc(doc(F().db, "offers", id), { views: increment(1) }); } catch { /* ignore */ } },
-  async uploadPhoto(file) {
-    const id = await uid();
-    const ext = (file.name.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "");
-    const r = sref(F().storage, `offer-photos/${id}/${Date.now()}.${ext}`);
-    await uploadBytes(r, file, { contentType: file.type });
-    return getDownloadURL(r);
-  },
+  async uploadPhoto(file) { return compressPhoto(file); },
 
   // ---------- number exchange ----------
   async revealContact(offerId) { return call("revealContact", { offerId }); },
