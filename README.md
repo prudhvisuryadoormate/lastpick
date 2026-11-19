@@ -25,6 +25,45 @@ LastPick only connects people. The deal, payment and service are between the cus
 - A customer's number reaches an owner only when the customer taps **Share my number** (`lpShareNumber` function). Owners see leads only while Owner Pro is active.
 - Offers are created only through the `lpCreateOffer` function, which checks the owner's plan. Offers become visible only when the business is **verified by an admin** and Owner Pro is active.
 - Subscriptions are written only by Cloud Functions, after Razorpay's payment signature is verified, or by an admin.
+- **Rate limits** per user (`rateLimits/{uid}`): 60 new numbers viewed/hour, 30 numbers shared/hour, 30 offers/day, 10 reviews/day, 5 complaints/day. This stops scraping of business numbers and runaway bills.
+- **Audit log** (`auditLog`, kept 1 year): number views and shares, offers, reviews, admin actions, data exports and account deletions. Apps can't read or write it; view it in the Firebase console.
+- **Encryption:** HTTPS/TLS in transit and Google-managed encryption at rest for Auth, Firestore and Functions. Hosting sends HSTS, no-framing and no-sniff headers (`firebase.json`).
+- **Partners post only in their categories.** A business picks a main category plus up to 2 more (`businesses.categories`). `lpCreateOffer` refuses any other category, so a business registered for food can post only food. A category change shows as a flag to moderators.
+
+## Reviews
+
+- Only a customer who viewed the number of, called, messaged or shared their number with a business through LastPick can review it. Reviews show "Contacted via LastPick" and the customer's first name (follows IS 19000:2022 on online consumer reviews).
+- One review per customer per business, editable. Phone numbers, e-mails and links are refused.
+- Businesses reply (Owner → Reviews) but can't delete reviews. Anyone can report a review. Admins and moderators hide reviews from Admin → Reports.
+- The rating (`businesses.rating = {avg, count}`) is recalculated by `lpOnReviewWrite` and copied onto offers.
+
+## Privacy, consent and complaints (India)
+
+Built to follow the **DPDP Act 2023 + DPDP Rules 2025** (most duties apply from 13 May 2027, built in now), the **IT (Intermediary Guidelines) Rules 2021**, the **Consumer Protection (E-Commerce) Rules 2020** and **Google Play's** account-deletion policy.
+
+- **Notice + consent at sign-up:** an itemised "what we collect and why" list and two unticked boxes (18+, agree). The consent is stored server-side with the notice version (`consentLog`, `users.consent`). When `CONSENT_VERSION` changes, everyone is asked again. Businesses accept separate business terms (`users.partnerConsent`).
+- **Share-my-number confirmation:** customers see exactly who gets their name and number before it's shared.
+- **Location** is used on the phone only and never stored on the server.
+- **Rights:** Account → Privacy & your data: **download my data** (`lpExportMyData`, JSON), correct details, **delete my account** (`lpDeleteMyAccount` + `lpPurgeUserTask`). The public page `https://lastpick-ce569.web.app/#/delete-account` is the URL to give Play Console → Data safety → Delete account.
+- **Complaints:** `#/grievance` gives every complaint a ticket number; admins handle them in Admin → Complaints (acknowledge within 24 h, resolve within 15 days).
+- **Your legal details** must be shown in the app. Set these in `.env.production` before launch (as a personal publisher, use your own name and address):
+  `VITE_LEGAL_NAME`, `VITE_LEGAL_ADDRESS`, `VITE_GRIEVANCE_OFFICER`, `VITE_GRIEVANCE_EMAIL`, `VITE_GRIEVANCE_PHONE`.
+
+## Payments and Google Play
+
+Google Play's payments policy says digital features sold inside an app (such as a pass that unlocks phone numbers) must use **Google Play Billing**. In India you may offer an outside gateway such as PayU **alongside** Play Billing ("alternative billing"), with a 4% lower Google fee, after enrolling in Play Console and integrating Google's alternative billing APIs. A PayU-only checkout inside the app breaks the policy.
+
+So the apps (`IS_NATIVE`) never show prices or payment buttons. Choose one before turning payments on:
+1. **Pay on the website only** (simplest, no Google fee): users subscribe at the web app; the APK just logs in and uses the plan. The app must not link to or mention the website for payment.
+2. **Google Play Billing in the app** (+ optionally PayU as alternative billing): needs a native billing plugin and server-side purchase verification.
+
+## Caching, queue and costs
+
+- **Caching:** feeds are reused for 60 s and the city list for 5 min (`src/api/firebase.js`); Firestore keeps already-read documents on the phone (IndexedDB); app files are cached by the Firebase CDN for a year (`/assets/**`). Redis/Memorystore isn't used: it costs about ₹3,000+/month even when idle.
+- **Queue:** Cloud Tasks (`lpSyncOwnerTask`, `lpPurgeUserTask`) runs fan-out work in the background with retries. If the queue isn't available, the work runs inline.
+- **Database:** Firestore has no servers or connection pools to manage and scales automatically. Function instances are capped (`maxInstances: 10`) so a traffic spike can't run up the bill; raise it as you grow. The named `lastpick` database has no free tier, so every read and write is billed, but at Firestore's per-100,000-operation prices that's small. Caching keeps the counts down.
+- **Storage:** full photos (≤200 KB) are deleted as soon as an offer ends; thumbnails (≤30 KB) go when the offer is archived 7 days later; the archive keeps about 1 KB per offer.
+- **Monitoring and backups:** run `bash scripts/setup-production.sh you@example.com` once in Cloud Shell. It sets up daily backups (7 days) + point-in-time recovery, error and crash alerts by e-mail, and an uptime check. Then add a budget alert in the Billing console.
 
 ## Run locally
 
@@ -106,7 +145,7 @@ Until payments are switched on, **everyone who logs in can see owners' numbers a
 
 - **City-based feed.** Customers pick a city (the nearest big city is chosen automatically). Each feed loads only that city's live offers, which keeps database reads and costs low. `cities/{cityKey}` holds live-offer counts per city.
 - **Photos.** Each offer stores a small thumbnail (about 2–25 KB) for lists. The full photo lives in `offerPhotos/{offerId}` and loads only on the offer page.
-- **Nightly cleanup** (`lpNightlyCleanup`, 02:30 IST) moves offers that ended more than 7 days ago into a compact `offerArchive` (owners see it under My offers → History) and deletes their photos. It also deletes archive entries after 12 months, leads and contact logs after 6 months, and resolved reports after 12 months. The periods are in `RETENTION` in `src/lib/config.js` and `functions/index.js`.
+- **Nightly cleanup** (`lpNightlyCleanup`, 02:30 IST) moves offers that ended more than 7 days ago into a compact `offerArchive` (owners see it under My offers → History) and deletes their photos. Full photos are deleted as soon as an offer ends. It also deletes archive entries, leads, contact logs, audit logs and resolved reports after 12 months (DPDP Rules 2025 ask for 1 year of logs), closed complaints after 24 months, and expired rate-limit counters. The periods are in `RETENTION` in `src/lib/config.js` and `functions/index.js`.
 - **India only.** Sign-up and business numbers must be Indian (+91 mobile, or landline with STD code). Businesses must pick an Indian state.
 - **Admin team.**
   - `admin` sees all of India: overview and revenue, businesses, reports, users, plans and team.
@@ -120,7 +159,11 @@ Edit `src/lib/config.js`: app name, plan prices and perks, categories, templates
 
 ## Before launch
 
-- Have a lawyer review the template **Terms** and **Privacy** pages (`src/pages/account.jsx`). They cover India's consumer and data-protection rules, including the DPDP Act.
+- Have a lawyer review the template **Terms** and **Privacy notice** (`src/pages/privacy.jsx`).
+- Fill in your legal details and Grievance Officer in `.env.production` (see Privacy above).
+- Run `scripts/setup-production.sh` and add a budget alert.
+- Play Console: a **personal** account created after 13 Nov 2023 must run a **closed test with 12+ testers for 14 days** before production. Fill in the Data safety form (name, e-mail, phone, approximate location used on device, app activity, crash logs) and give the delete-account URL.
+- Decide how payments work with Google Play (see above) before turning payments on.
 - Add your real support email in `src/lib/config.js`.
 - In Firebase Authentication → Settings, add your domain to **Authorized domains** if you use a custom domain.
 
@@ -130,7 +173,9 @@ Edit `src/lib/config.js`: app name, plan prices and perks, categories, templates
 src/
   api/          firebase.js (live), demo.js (in-browser demo), index.js (picks one)
   lib/          config.js (name, prices, categories), format.js
-  pages/        customer.jsx, owner.jsx, account.jsx (subscribe, login, legal, admin)
+  pages/        customer.jsx, owner.jsx, account.jsx (subscribe, login, admin), privacy.jsx (notice, consent,
+                terms, complaints, data export, account deletion), reviews.jsx
+scripts/        setup-production.sh (backups, alerts, uptime check; run in Cloud Shell)
   components.jsx, state.jsx (app state + router), App.jsx, main.jsx, styles.css
 functions/      Cloud Functions
 firestore.rules, firestore.indexes.json, firebase.json

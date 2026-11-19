@@ -31,7 +31,7 @@ export function OfferCard({ offer, preview = false }) {
       </OfferImage>
       <div className="body">
         <div className="t">{offer.title}</div>
-        <div className="s">{offer.business?.name} · {offer.business?.area}{km != null && km < 100 ? " · " + kmText(km) : ""}</div>
+        <div className="s">{offer.business?.name}{offer.business?.rating?.count ? <> <span style={{ color: "#f5a524" }}>★</span>{Number(offer.business.rating.avg).toFixed(1)}</> : null} · {offer.business?.area}{km != null && km < 100 ? " · " + kmText(km) : ""}</div>
         <div className="foot">
           <div className="price"><b>{rupee(offer.price)}</b><s>{rupee(offer.origPrice)}</s></div>
           {isCustomer || preview ? <span className="pill p-ok">📞 Number visible</span> : <span className="pill p-mute">{freeMode ? "🔑 Log in for number" : "🔒 Number locked"}</span>}

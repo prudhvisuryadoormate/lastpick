@@ -46,7 +46,8 @@ service cloud.firestore {
         && request.resource.data.ownerId == uid()
         && request.resource.data.status == 'pending';
       allow update: if signedIn() && (
-        (bizId == uid() && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'statusNote', 'ownerId', 'reportCount', 'reviewedBy', 'reviewedAt']))
+        (bizId == uid() && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'statusNote', 'ownerId', 'reportCount', 'reviewedBy', 'reviewedAt', 'rating'])
+          && (!('categories' in request.resource.data) || (request.resource.data.categories is list && request.resource.data.categories.size() <= 3)))
         || isAdmin());
     }
 
@@ -80,8 +81,8 @@ service cloud.firestore {
       allow read: if (resource.data.visible == true && resource.data.status == 'live')
         || (signedIn() && (resource.data.ownerId == uid() || isAdmin()));
       allow update: if
-        // anyone may add one view
-        (onlyChanged(['views']) && request.resource.data.views == resource.data.views + 1)
+        // a signed-in user may add one view (stops bots running up writes)
+        (signedIn() && onlyChanged(['views']) && request.resource.data.views == resource.data.views + 1)
         // owner may end their offer
         || (signedIn() && resource.data.ownerId == uid() && onlyChanged(['status']) && request.resource.data.status == 'ended')
         || isAdmin();
@@ -101,9 +102,23 @@ service cloud.firestore {
       allow read: if signedIn() && (resource.data.customerId == uid() || isAdmin());
     }
 
+    // ---- reviews: written only by Cloud Functions (lpSubmitReview / lpReplyReview) ----
+    match /reviews/{reviewId} {
+      allow read: if resource.data.status == 'published'
+        || (signedIn() && (resource.data.customerId == uid() || resource.data.businessId == uid() || isAdmin()));
+    }
+
+    // ---- complaints / grievance tickets: created by lpSubmitGrievance ----
+    match /grievances/{ticket} {
+      allow read: if signedIn() && (resource.data.userId == uid() || isAdmin());
+    }
+
+    // auditLog, consentLog, rateLimits and deletedAccounts have no rule, so apps can't read or write them.
+
     // ---- reports of misuse ----
     match /reports/{reportId} {
-      allow create: if signedIn() && request.resource.data.reporterId == uid() && request.resource.data.status == 'open';
+      allow create: if signedIn() && request.resource.data.reporterId == uid() && request.resource.data.status == 'open'
+        && request.resource.data.offerId is string && !('reviewId' in request.resource.data);
       allow read: if signedIn() && (resource.data.reporterId == uid() || isAdmin());
       allow update: if isAdmin();
     }

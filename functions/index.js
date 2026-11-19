@@ -4,14 +4,19 @@
 // - Billing: Razorpay subscriptions (billing) + razorpayWebhook for renewals
 // - Admin: plans, roles (admin / city moderators), business verification, reports, India-wide stats, user search
 // - Upkeep: offer visibility sync, per-city counters, hourly plan expiry, nightly archive + cleanup
+// - Reviews (only customers who contacted the business), owner replies, review reports
+// - Privacy (DPDP Act 2023 / Rules 2025): consent records, data export, account deletion, grievance tickets
+// - Safety: per-user rate limits, a 1-year audit log, Cloud Tasks queue for heavy fan-out jobs
 const crypto = require("crypto");
 const { setGlobalOptions } = require("firebase-functions/v2");
 const { onCall, onRequest, HttpsError } = require("firebase-functions/v2/https");
 const { onDocumentWritten, onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
+const { onTaskDispatched } = require("firebase-functions/v2/tasks");
 const { defineSecret, defineString } = require("firebase-functions/params");
 const { initializeApp } = require("firebase-admin/app");
-const { getFirestore, FieldValue, Timestamp } = require("firebase-admin/firestore");
+const { getFirestore, FieldValue, Timestamp, AggregateField } = require("firebase-admin/firestore");
+const { getFunctions } = require("firebase-admin/functions");
 const { getAuth } = require("firebase-admin/auth");
 
 initializeApp();
@@ -99,10 +104,44 @@ const bizSummary = (b) => ({
   name: b.name, area: b.area || "", city: b.city || "", state: b.state || "", cityKey: cityKey(b.city), pincode: b.pincode || "",
   lat: b.lat ?? null, lng: b.lng ?? null,
   geohash: typeof b.lat === "number" && typeof b.lng === "number" ? geohash(b.lat, b.lng) : null,
+  rating: b.rating && b.rating.count ? { avg: b.rating.avg, count: b.rating.count } : null,
 });
 const DAY = 86400000;
 // keep in sync with RETENTION in src/lib/config.js
-const RETENTION = { endedOfferVisibleDays: 7, archiveDays: 365, leadsDays: 180, contactsDays: 180, reportsDays: 365 };
+// Logs of who exchanged numbers are kept 1 year (DPDP Rules 2025, rule 8(3)), then deleted.
+const RETENTION = { endedOfferVisibleDays: 7, archiveDays: 365, leadsDays: 365, contactsDays: 365, reportsDays: 365, auditDays: 365, closedGrievanceDays: 730 };
+// Bump when the privacy notice / terms change: everyone is asked to accept again. Keep in sync with src/lib/config.js.
+const CONSENT_VERSION = "2026-11-19";
+
+// ---- audit log: who did what, kept 1 year. Not readable or writable by apps (no rule allows it).
+function audit(type, data = {}) {
+  return db.collection("auditLog").add({ type, ...data, at: FieldValue.serverTimestamp() }).catch((e) => console.error("audit failed", e.message));
+}
+// ---- per-user rate limits (fixed window). Stops number scraping, spam reviews and runaway bills.
+async function rateLimit(uid, action, max, windowSec) {
+  const ref = db.doc(`rateLimits/${uid}`);
+  await db.runTransaction(async (t) => {
+    const d = (await t.get(ref)).data() || {};
+    const now = Date.now();
+    const cur = d[action] && now - d[action].start < windowSec * 1000 ? d[action] : { start: now, n: 0 };
+    if (cur.n >= max) throw new HttpsError("resource-exhausted", "Too many requests. Please try again later.");
+    t.set(ref, { [action]: { start: cur.start, n: cur.n + 1 }, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+  });
+}
+// ---- queue (Cloud Tasks): heavy jobs run in the background with retries. Falls back to running inline.
+async function enqueue(fn, data, delaySeconds = 2) {
+  try {
+    await getFunctions().taskQueue(`locations/asia-south1/functions/${fn}`).enqueue(data, { scheduleDelaySeconds: delaySeconds });
+    return true;
+  } catch (e) {
+    console.warn(JSON.stringify({ severity: "WARNING", message: `queue ${fn} unavailable, running inline`, error: e.message }));
+    return false;
+  }
+}
+async function queueOwnerSync(ownerId) { if (!(await enqueue("lpSyncOwnerTask", { ownerId }))) await syncOwnerOffers(ownerId); }
+// Phone numbers, links and e-mails are not allowed in reviews/replies (keeps contact inside the number-exchange flow).
+const hasContactInfo = (t) => /[6-9]\d{9}/.test(String(t).replace(/[\s().+-]/g, "")) || /https?:\/\/|www\.|\S+@\S+\.\S+/i.test(t);
+const firstName = (n) => String(n || "Customer").trim().split(/\s+/)[0].slice(0, 30) || "Customer";
 const isDataImage = (v, max) => typeof v === "string" && /^data:image\/(jpeg|png|webp);base64,/.test(v) && v.length <= max;
 
 // Per-city counter of live offers (cities/{cityKey}), used for the city picker and the admin dashboard.
@@ -164,6 +203,13 @@ exports.lpCreateOffer = onCall(async (req) => {
   if (!(origPrice > 0) || !(price >= 0) || !(price < origPrice)) throw new HttpsError("invalid-argument", "Offer price must be lower than the normal price");
   if (!(endsAt > Date.now()) || endsAt > Date.now() + MAX_OFFER_MS + 60000) throw new HttpsError("invalid-argument", "Offers can run for up to 30 days");
   // photo: a small thumbnail lives on the offer (for lists); the full photo lives in offerPhotos/{id} (opened on demand)
+  // a business posts only in the categories it registered (main + up to 2 more)
+  const allowed = Array.isArray(b.categories) && b.categories.length ? b.categories : [b.category || "other"];
+  const category = str(d.category, 30) || allowed[0];
+  if (!allowed.includes(category)) {
+    throw new HttpsError("permission-denied", "Your business can post only in its registered categories. Add this category in Business profile first.");
+  }
+  await rateLimit(uid, "createOffer", 30, 86400);
   const photoThumb = isDataImage(d.photoThumb, 30000) ? d.photoThumb : null;
   const photo = isDataImage(d.photo, 200000) ? d.photo : null;
   const discount = 1 - price / origPrice;
@@ -173,7 +219,7 @@ exports.lpCreateOffer = onCall(async (req) => {
   const batch = db.batch();
   batch.set(ref, {
     ownerId: uid, businessId: uid, business, cityKey: business.cityKey, pincode: business.pincode, geohash: business.geohash,
-    title, description: str(d.description, 1000), category: str(d.category, 30) || "other", emoji: str(d.emoji, 8) || "📦",
+    title, description: str(d.description, 1000), category, emoji: str(d.emoji, 8) || "📦",
     photoThumb, hasPhoto: !!photo, origPrice, price, quantity: str(d.quantity, 60),
     endsAt: Timestamp.fromMillis(endsAt), status: "live", visible: b.status === "verified", views: 0,
     flags: discount >= 0.9 ? ["very-high-discount"] : [],
@@ -182,6 +228,7 @@ exports.lpCreateOffer = onCall(async (req) => {
   if (photo) batch.set(db.doc(`offerPhotos/${ref.id}`), { ownerId: uid, data: photo, createdAt: FieldValue.serverTimestamp() });
   await batch.commit();
   await refreshCity(business.cityKey);
+  audit("offer_created", { actor: uid, offerId: ref.id, category });
   return { id: ref.id, visible: b.status === "verified" };
 });
 
@@ -199,7 +246,8 @@ exports.lpRevealContact = onCall(async (req) => {
   if (customer && !own) {
     const ref = db.doc(`customerContacts/${uid}_${o.id}`);
     const prev = await ref.get();
-    await ref.set({ customerId: uid, offerId: o.id, how: prev.exists ? prev.data().how : "Viewed number", at: FieldValue.serverTimestamp(), offer: offerSummary(o) }, { merge: true });
+    if (!prev.exists) { await rateLimit(uid, "reveal", 60, 3600); audit("number_viewed", { actor: uid, offerId: o.id, businessId: o.businessId }); }
+    await ref.set({ customerId: uid, offerId: o.id, businessId: o.businessId, how: prev.exists ? prev.data().how : "Viewed number", at: FieldValue.serverTimestamp(), offer: offerSummary(o) }, { merge: true });
   }
   return { phone: c.data().phone, whatsapp: c.data().whatsapp !== false };
 });
@@ -210,7 +258,7 @@ exports.lpLogContact = onCall(async (req) => {
   const o = await getOffer(req.data?.offerId);
   if (o.ownerId === uid) return { ok: false };
   await db.doc(`customerContacts/${uid}_${o.id}`).set({
-    customerId: uid, offerId: o.id, how: str(req.data?.how, 40) || "Contacted", at: FieldValue.serverTimestamp(), offer: offerSummary(o),
+    customerId: uid, offerId: o.id, businessId: o.businessId, how: str(req.data?.how, 40) || "Contacted", at: FieldValue.serverTimestamp(), offer: offerSummary(o),
   }, { merge: true });
   return { ok: true };
 });
@@ -226,6 +274,7 @@ exports.lpShareNumber = onCall(async (req) => {
 
   const leadRef = db.doc(`leads/${o.id}_${uid}`);
   const prev = await leadRef.get();
+  if (!prev.exists) { await rateLimit(uid, "share", 30, 3600); audit("number_shared", { actor: uid, offerId: o.id, businessId: o.businessId }); }
   await leadRef.set({
     offerId: o.id, businessId: o.businessId, ownerId: o.ownerId, customerId: uid,
     name: user.name || "Customer", phone: user.phone, offerTitle: o.title, offerEmoji: o.emoji || "📦",
@@ -233,7 +282,7 @@ exports.lpShareNumber = onCall(async (req) => {
     createdAt: prev.exists ? prev.data().createdAt : FieldValue.serverTimestamp(),
   }, { merge: true });
   await db.doc(`customerContacts/${uid}_${o.id}`).set({
-    customerId: uid, offerId: o.id, how: "Shared my number", at: FieldValue.serverTimestamp(), offer: offerSummary(o),
+    customerId: uid, offerId: o.id, businessId: o.businessId, how: "Shared my number", at: FieldValue.serverTimestamp(), offer: offerSummary(o),
   }, { merge: true });
   return { ok: true };
 });
@@ -347,8 +396,9 @@ exports.lpAdminSetPlan = onCall(async (req) => {
 exports.lpOnBusinessWrite = onDocumentWritten({ document: "businesses/{ownerId}", database: DB_ID }, async (event) => {
   const before = event.data?.before?.data(), after = event.data?.after?.data();
   const keys = ["status", "name", "area", "city", "state", "pincode", "lat", "lng"];
-  if (before && after && keys.every((k) => before[k] === after[k])) return;
-  await syncOwnerOffers(event.params.ownerId);
+  const sameRating = JSON.stringify(before?.rating || null) === JSON.stringify(after?.rating || null);
+  if (before && after && sameRating && keys.every((k) => before[k] === after[k])) return;
+  await queueOwnerSync(event.params.ownerId);
 });
 
 exports.lpOnSubscriptionWrite = onDocumentWritten({ document: "subscriptions/{subId}", database: DB_ID }, async (event) => {
@@ -356,7 +406,7 @@ exports.lpOnSubscriptionWrite = onDocumentWritten({ document: "subscriptions/{su
   const s = after || before;
   if (!s || s.plan !== "owner") return;
   if (before && after && subActive(before) === subActive(after)) return;
-  await syncOwnerOffers(s.userId);
+  await queueOwnerSync(s.userId);
 });
 
 // Hourly: mark plans whose paid period ended as expired (the safety net for webhooks) and refresh city counters.
@@ -383,7 +433,7 @@ exports.lpOnOfferWrite = onDocumentWritten({ document: "offers/{offerId}", datab
 // A new report: stamp it with the offer's business and state (so city moderators see it) and count it on the business.
 exports.lpOnReportCreate = onDocumentCreated({ document: "reports/{reportId}", database: DB_ID }, async (event) => {
   const r = event.data?.data();
-  if (!r?.offerId) return;
+  if (!r?.offerId || r.type === "review") return;
   const offer = (await db.doc(`offers/${r.offerId}`).get()).data();
   if (!offer) return;
   await event.data.ref.set({ businessId: offer.businessId, state: offer.business?.state || "", city: offer.business?.city || "" }, { merge: true });
@@ -427,7 +477,21 @@ exports.lpNightlyCleanup = onSchedule({ schedule: "30 2 * * *", timeZone: "Asia/
     await batch.commit();
     archived += snap.size;
   }
+  // full-size photos are deleted as soon as an offer ends (the thumbnail stays until the offer is archived)
+  let photosDeleted = 0;
+  while (photosDeleted < 5000) {
+    const snap = await db.collection("offers").where("hasPhoto", "==", true).where("endsAt", "<", Timestamp.now()).limit(300).get();
+    if (snap.empty) break;
+    const batch = db.batch();
+    snap.docs.forEach((d) => { batch.delete(db.doc(`offerPhotos/${d.id}`)); batch.update(d.ref, { hasPhoto: false }); });
+    await batch.commit();
+    photosDeleted += snap.size;
+  }
   const t = (days) => Timestamp.fromMillis(now - days * DAY);
+  const auditDeleted = await deleteWhere(db.collection("auditLog").where("at", "<", t(RETENTION.auditDays)));
+  const ratesDeleted = await deleteWhere(db.collection("rateLimits").where("updatedAt", "<", t(2)));
+  const deletedAccountsDeleted = await deleteWhere(db.collection("deletedAccounts").where("deletedAt", "<", t(RETENTION.auditDays)));
+  const grievancesDeleted = await deleteWhere(db.collection("grievances").where("status", "in", ["resolved", "rejected"]).where("updatedAt", "<", t(RETENTION.closedGrievanceDays)));
   const archiveDeleted = await deleteWhere(db.collection("offerArchive").where("endsAt", "<", t(RETENTION.archiveDays)));
   const leadsDeleted = await deleteWhere(db.collection("leads").where("createdAt", "<", t(RETENTION.leadsDays)));
   const contactsDeleted = await deleteWhere(db.collection("customerContacts").where("at", "<", t(RETENTION.contactsDays)));
@@ -435,7 +499,7 @@ exports.lpNightlyCleanup = onSchedule({ schedule: "30 2 * * *", timeZone: "Asia/
   const rb = db.batch(); let reportsDeleted = 0;
   oldReports.docs.forEach((d) => { if (d.data().status !== "open") { rb.delete(d.ref); reportsDeleted++; } });
   await rb.commit();
-  console.log(JSON.stringify({ archived, archiveDeleted, leadsDeleted, contactsDeleted, reportsDeleted }));
+  console.log(JSON.stringify({ message: "nightly cleanup", archived, photosDeleted, archiveDeleted, leadsDeleted, contactsDeleted, reportsDeleted, auditDeleted, ratesDeleted, deletedAccountsDeleted, grievancesDeleted }));
 });
 
 // ---------------------------------------------------------------- admin & moderator tools
@@ -446,7 +510,7 @@ exports.lpAdminStats = onCall(async (req) => {
   const me = await staff(req);
   const count = async (q) => (await q.count().get()).data().count;
   const since30 = Timestamp.fromMillis(Date.now() - 30 * DAY);
-  const [users, verified, pending, suspended, customers, owners, leads30, openReports, archived] = await Promise.all([
+  const [users, verified, pending, suspended, customers, owners, leads30, openReports, archived, openGrievances, reviews] = await Promise.all([
     count(db.collection("users")),
     count(db.collection("businesses").where("status", "==", "verified")),
     count(db.collection("businesses").where("status", "==", "pending")),
@@ -455,6 +519,8 @@ exports.lpAdminStats = onCall(async (req) => {
     count(db.collection("leads").where("createdAt", ">", since30)),
     count(db.collection("reports").where("status", "==", "open")),
     count(db.collection("offerArchive")),
+    count(db.collection("grievances").where("status", "in", ["open", "acknowledged"])),
+    count(db.collection("reviews").where("status", "==", "published")),
   ]);
   const cities = (await db.collection("cities").orderBy("liveOffers", "desc").limit(300).get()).docs
     .map((d) => ({ key: d.id, ...d.data(), updatedAt: undefined }))
@@ -462,7 +528,7 @@ exports.lpAdminStats = onCall(async (req) => {
   const liveOffers = cities.reduce((n, c) => n + (c.liveOffers || 0), 0);
   return {
     role: me.role, regions: me.regions, freeMode: await freeMode(),
-    totals: { users, verified, pending, suspended, customers, owners, leads30, openReports, archived, liveOffers },
+    totals: { users, verified, pending, suspended, customers, owners, leads30, openReports, archived, liveOffers, openGrievances: me.role === "admin" ? openGrievances : null, reviews },
     cities,
   };
 });
@@ -505,6 +571,7 @@ exports.lpAdminSetRole = onCall(async (req) => {
   if (user.uid === me && role !== "admin") throw new HttpsError("failed-precondition", "You can't remove your own admin access");
   const regions = role === "moderator" ? (Array.isArray(req.data.regions) ? req.data.regions.map((r) => str(r, 60)).filter(Boolean) : []) : [];
   await db.doc(`users/${user.uid}`).set({ role, regions }, { merge: true });
+  audit("admin_role", { actor: me, target: user.uid, role, regions });
   return { ok: true };
 });
 
@@ -525,8 +592,9 @@ exports.lpAdminListBusinesses = onCall(async (req) => {
     if ((b.reportCount || 0) >= 2) flags.push(`Reported ${b.reportCount}×`);
     if (dupes > 1) flags.push("Same phone as another business");
     if (b.createdAt && Date.now() - b.createdAt.toMillis() < 2 * DAY) flags.push("New in last 48 h");
+    if (b.categoriesChangedAt && Date.now() - b.categoriesChangedAt.toMillis() < 7 * DAY) flags.push("Changed categories this week");
     return {
-      id: b.id, name: b.name, category: b.category, address: b.address || "", area: b.area || "", city: b.city || "", state: b.state || "",
+      id: b.id, name: b.name, category: b.category, categories: b.categories?.length ? b.categories : [b.category], rating: b.rating || null, address: b.address || "", area: b.area || "", city: b.city || "", state: b.state || "",
       lat: b.lat ?? null, lng: b.lng ?? null, status: b.status, statusNote: b.statusNote || "", reportCount: b.reportCount || 0,
       createdAt: b.createdAt?.toMillis?.() || null, phone: phones[i], flags,
     };
@@ -542,6 +610,7 @@ exports.lpAdminSetBusinessStatus = onCall(async (req) => {
   if (!b) throw new HttpsError("not-found", "Business not found");
   if (!me.canSee(b.state)) throw new HttpsError("permission-denied", "This business is outside your region");
   await ref.update({ status, statusNote: str(req.data.note, 300), reviewedBy: me.uid, reviewedAt: FieldValue.serverTimestamp() });
+  audit("admin_business_status", { actor: me.uid, businessId, status });
   return { ok: true };
 });
 
@@ -549,13 +618,16 @@ exports.lpAdminListReports = onCall(async (req) => {
   const me = await staff(req);
   const snap = await db.collection("reports").where("status", "==", "open").orderBy("createdAt", "desc").limit(200).get();
   const list = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((r) => me.canSee(r.state));
-  const offers = await Promise.all(list.map((r) => db.doc(`offers/${r.offerId}`).get()));
+  const offers = await Promise.all(list.map((r) => r.offerId ? db.doc(`offers/${r.offerId}`).get() : null));
+  const reviews = await Promise.all(list.map((r) => r.reviewId ? db.doc(`reviews/${r.reviewId}`).get() : null));
+  const bizNames = await Promise.all(list.map((r) => r.reviewId && r.businessId ? db.doc(`businesses/${r.businessId}`).get() : null));
   return list.map((r, i) => {
-    const o = offers[i].data();
+    const o = offers[i]?.data(), rv = reviews[i]?.data();
     return {
-      id: r.id, reason: r.reason, details: r.details || "", status: r.status, createdAt: r.createdAt?.toMillis?.() || null,
+      id: r.id, type: r.type || "offer", reason: r.reason, details: r.details || "", status: r.status, createdAt: r.createdAt?.toMillis?.() || null,
       city: r.city || "", state: r.state || "",
       offer: o ? { id: offers[i].id, title: o.title, status: o.status, business: { name: o.business?.name || "", city: o.business?.city || "" } } : null,
+      review: rv ? { id: reviews[i].id, name: rv.name, rating: rv.rating, text: rv.text, status: rv.status, businessName: bizNames[i]?.data()?.name || "" } : null,
     };
   });
 });
@@ -569,7 +641,9 @@ exports.lpAdminResolveReport = onCall(async (req) => {
   if (!r) throw new HttpsError("not-found", "Report not found");
   if (!me.canSee(r.state)) throw new HttpsError("permission-denied", "This report is outside your region");
   if (removeOffer && r.offerId) await db.doc(`offers/${r.offerId}`).set({ status: "removed" }, { merge: true });
+  if (removeOffer && r.reviewId) await db.doc(`reviews/${r.reviewId}`).set({ status: "hidden", hiddenBy: me.uid }, { merge: true });
   await ref.update({ status, resolvedBy: me.uid, resolvedAt: FieldValue.serverTimestamp() });
+  audit("admin_report", { actor: me.uid, reportId, status, removed: !!removeOffer });
   return { ok: true };
 });
 
@@ -580,6 +654,255 @@ exports.lpAdminSetConfig = onCall({ timeoutSeconds: 300 }, async (req) => {
   await db.doc("config/app").set({ freeMode: free, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
   cfgCache = { at: Date.now(), freeMode: free };
   const owners = await db.collection("businesses").select().get();
-  for (const b of owners.docs) await syncOwnerOffers(b.id);
+  for (const b of owners.docs) await queueOwnerSync(b.id);
+  audit("admin_config", { actor: req.auth.uid, freeMode: free });
   return { freeMode: free, businesses: owners.size };
+});
+
+// ---------------------------------------------------------------- queue workers (Cloud Tasks)
+// Re-sync one owner's offers (visibility, business details, rating). Retried automatically on failure.
+exports.lpSyncOwnerTask = onTaskDispatched({
+  retryConfig: { maxAttempts: 5, minBackoffSeconds: 30 },
+  rateLimits: { maxConcurrentDispatches: 6 },
+}, async (req) => {
+  if (typeof req.data?.ownerId === "string") await syncOwnerOffers(req.data.ownerId);
+});
+
+// Removes everything left of a deleted account (the account itself is deleted right away by lpDeleteMyAccount).
+exports.lpPurgeUserTask = onTaskDispatched({
+  retryConfig: { maxAttempts: 5, minBackoffSeconds: 60 },
+  rateLimits: { maxConcurrentDispatches: 2 },
+  timeoutSeconds: 540,
+}, async (req) => {
+  if (typeof req.data?.uid === "string") await purgeUser(req.data.uid);
+});
+
+// ---------------------------------------------------------------- reviews
+// Only a customer who viewed the number of, called, messaged or shared their number with a business
+// through LastPick can review it ("Contacted via LastPick"). One review per customer per business, editable.
+// Owners can reply but can't delete reviews; admins/moderators hide reviews that break the rules (IS 19000:2022).
+async function contactedBusiness(uid, businessId) {
+  const [c, l] = await Promise.all([
+    db.collection("customerContacts").where("customerId", "==", uid).where("businessId", "==", businessId).limit(1).get(),
+    db.collection("leads").where("customerId", "==", uid).where("businessId", "==", businessId).limit(1).get(),
+  ]);
+  if (!c.empty) return c.docs[0].data().offer?.title || "";
+  if (!l.empty) return l.docs[0].data().offerTitle || "";
+  return null;
+}
+
+exports.lpSubmitReview = onCall(async (req) => {
+  const uid = needAuth(req);
+  const businessId = str(req.data?.businessId, 128);
+  const rating = Math.round(Number(req.data?.rating));
+  const text = str(req.data?.text, 500);
+  if (!businessId) throw new HttpsError("invalid-argument", "Missing business");
+  if (!(rating >= 1 && rating <= 5)) throw new HttpsError("invalid-argument", "Pick 1 to 5 stars");
+  if (hasContactInfo(text)) throw new HttpsError("invalid-argument", "Please don't include phone numbers, e-mails or links in a review");
+  if (businessId === uid) throw new HttpsError("failed-precondition", "You can't review your own business");
+  const biz = await db.doc(`businesses/${businessId}`).get();
+  if (!biz.exists) throw new HttpsError("not-found", "Business not found");
+  const offerTitle = await contactedBusiness(uid, businessId);
+  if (offerTitle === null) throw new HttpsError("failed-precondition", "You can review a business after you contact it through LastPick");
+  await rateLimit(uid, "review", 10, 86400);
+  const user = (await db.doc(`users/${uid}`).get()).data() || {};
+  const ref = db.doc(`reviews/${businessId}_${uid}`);
+  const prev = (await ref.get()).data();
+  await ref.set({
+    businessId, customerId: uid, name: firstName(user.name), rating, text, offerTitle: str(offerTitle, 120), verified: true,
+    status: prev?.status === "hidden" ? "hidden" : "published", reportCount: prev?.reportCount || 0, reply: prev?.reply || null,
+    state: biz.data().state || "", edited: !!prev,
+    createdAt: prev?.createdAt || FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(),
+  });
+  audit("review", { actor: uid, businessId, rating, edited: !!prev });
+  return { ok: true, hidden: prev?.status === "hidden" };
+});
+
+exports.lpReplyReview = onCall(async (req) => {
+  const uid = needAuth(req);
+  const ref = db.doc(`reviews/${str(req.data?.reviewId, 300)}`);
+  const r = (await ref.get()).data();
+  if (!r || r.businessId !== uid) throw new HttpsError("permission-denied", "Only the business owner can reply");
+  const text = str(req.data?.text, 500);
+  if (hasContactInfo(text)) throw new HttpsError("invalid-argument", "Please don't include phone numbers, e-mails or links in a reply");
+  await rateLimit(uid, "reply", 50, 86400);
+  await ref.update({ reply: text ? { text, at: Timestamp.now() } : null });
+  return { ok: true };
+});
+
+exports.lpReportReview = onCall(async (req) => {
+  const uid = needAuth(req);
+  const reviewId = str(req.data?.reviewId, 300);
+  const ref = db.doc(`reviews/${reviewId}`);
+  const r = (await ref.get()).data();
+  if (!r) throw new HttpsError("not-found", "Review not found");
+  await rateLimit(uid, "report", 20, 86400);
+  const dup = await db.collection("reports").where("reviewId", "==", reviewId).where("reporterId", "==", uid).limit(1).get();
+  if (!dup.empty) return { ok: true };
+  await db.collection("reports").add({
+    type: "review", reviewId, businessId: r.businessId, state: r.state || "", city: "", reporterId: uid,
+    reason: str(req.data?.reason, 80) || "Breaks the rules", details: str(req.data?.details, 500), status: "open", createdAt: FieldValue.serverTimestamp(),
+  });
+  await ref.update({ reportCount: FieldValue.increment(1) });
+  return { ok: true };
+});
+
+// Keep the business rating (average of published reviews) up to date; offers copy it via syncOwnerOffers.
+exports.lpOnReviewWrite = onDocumentWritten({ document: "reviews/{reviewId}", database: DB_ID }, async (event) => {
+  const before = event.data?.before?.data(), after = event.data?.after?.data();
+  const r = after || before;
+  if (!r) return;
+  if (before && after && before.rating === after.rating && before.status === after.status) return;
+  const agg = await db.collection("reviews").where("businessId", "==", r.businessId).where("status", "==", "published")
+    .aggregate({ n: AggregateField.count(), avg: AggregateField.average("rating") }).get();
+  const { n, avg } = agg.data();
+  const biz = db.doc(`businesses/${r.businessId}`);
+  if (!(await biz.get()).exists) return;
+  await biz.update({ rating: { avg: n ? Math.round(avg * 10) / 10 : 0, count: n } });
+});
+
+// ---------------------------------------------------------------- privacy: consent, export, deletion
+// Consent is recorded server-side with the notice version, so we can show who agreed to what and when.
+exports.lpRecordConsent = onCall(async (req) => {
+  const uid = needAuth(req);
+  const kind = req.data?.kind === "partner" ? "partner" : "user";
+  if (req.data?.version !== CONSENT_VERSION) throw new HttpsError("failed-precondition", "Please update the app to see the latest privacy notice");
+  if (kind === "user" && req.data?.adult !== true) throw new HttpsError("invalid-argument", "You must be 18 or older to use LastPick");
+  const items = Array.isArray(req.data?.items) ? req.data.items.map((x) => str(x, 60)).filter(Boolean).slice(0, 10) : [];
+  await db.collection("consentLog").add({
+    userId: uid, kind, version: CONSENT_VERSION, items, at: FieldValue.serverTimestamp(),
+    userAgent: str(req.rawRequest?.headers?.["user-agent"], 200),
+  });
+  await db.doc(`users/${uid}`).set({ [kind === "partner" ? "partnerConsent" : "consent"]: { version: CONSENT_VERSION, at: FieldValue.serverTimestamp() } }, { merge: true });
+  return { ok: true, version: CONSENT_VERSION };
+});
+
+// Plain JSON copy of everything we hold about the user (right to access, DPDP Act s.11).
+function plain(v) {
+  if (v instanceof Timestamp) return v.toDate().toISOString();
+  if (v instanceof Date) return v.toISOString();
+  if (Array.isArray(v)) return v.map(plain);
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, plain(x)]));
+  return v;
+}
+exports.lpExportMyData = onCall(async (req) => {
+  const uid = needAuth(req);
+  await rateLimit(uid, "export", 5, 86400);
+  const one = async (p) => { const s = await db.doc(p).get(); return s.exists ? s.data() : null; };
+  const many = async (q) => (await q.limit(1000).get()).docs.map((d) => ({ id: d.id, ...d.data() }));
+  const [profile, business, businessContact, subCustomer, subOwner, offers, offerHistory, contacts, numbersShared, leadsReceived, reviewsWritten, reviewsOfMyBusiness, grievances, consents] = await Promise.all([
+    one(`users/${uid}`), one(`businesses/${uid}`), one(`businessContacts/${uid}`), one(`subscriptions/${uid}_customer`), one(`subscriptions/${uid}_owner`),
+    many(db.collection("offers").where("ownerId", "==", uid)), many(db.collection("offerArchive").where("ownerId", "==", uid)),
+    many(db.collection("customerContacts").where("customerId", "==", uid)), many(db.collection("leads").where("customerId", "==", uid)),
+    many(db.collection("leads").where("ownerId", "==", uid)), many(db.collection("reviews").where("customerId", "==", uid)),
+    many(db.collection("reviews").where("businessId", "==", uid)), many(db.collection("grievances").where("userId", "==", uid)),
+    many(db.collection("consentLog").where("userId", "==", uid)),
+  ]);
+  offers.forEach((o) => { delete o.photoThumb; });
+  contacts.forEach((c) => { if (c.offer) delete c.offer.photoThumb; });
+  audit("data_export", { actor: uid });
+  return plain({
+    exportedAt: new Date(), app: "LastPick", account: { uid, email: req.auth.token?.email || profile?.email || "" },
+    profile, business, businessContact, subscriptions: [subCustomer, subOwner].filter(Boolean), offers, offerHistory, contacts, numbersShared,
+    leadsReceived, reviewsWritten, reviewsOfMyBusiness, grievances, consents,
+  });
+});
+
+async function deleteDocs(q) {
+  let n = 0;
+  for (;;) {
+    const snap = await q.limit(300).get();
+    if (snap.empty) return n;
+    const batch = db.batch();
+    snap.docs.forEach((d) => { batch.delete(d.ref); if (d.ref.parent.id === "offers") batch.delete(db.doc(`offerPhotos/${d.id}`)); });
+    await batch.commit();
+    n += snap.size;
+  }
+}
+async function purgeUser(uid) {
+  const biz = (await db.doc(`businesses/${uid}`).get()).data();
+  const counts = {
+    offers: await deleteDocs(db.collection("offers").where("ownerId", "==", uid)),
+    archive: await deleteDocs(db.collection("offerArchive").where("ownerId", "==", uid)),
+    contacts: await deleteDocs(db.collection("customerContacts").where("customerId", "==", uid)),
+    leadsShared: await deleteDocs(db.collection("leads").where("customerId", "==", uid)),
+    leadsReceived: await deleteDocs(db.collection("leads").where("ownerId", "==", uid)),
+    reviewsWritten: await deleteDocs(db.collection("reviews").where("customerId", "==", uid)),
+    reviewsReceived: await deleteDocs(db.collection("reviews").where("businessId", "==", uid)),
+  };
+  await Promise.all([`users/${uid}`, `businesses/${uid}`, `businessContacts/${uid}`, `subscriptions/${uid}_customer`, `subscriptions/${uid}_owner`, `rateLimits/${uid}`]
+    .map((p) => db.doc(p).delete()));
+  if (biz?.city) await refreshCity(cityKey(biz.city));
+  console.log(JSON.stringify({ message: "account purged", uid, ...counts }));
+}
+
+// Delete my account (Google Play requires this in the app and on the web). Withdrawing consent = deleting the account.
+// Kept afterwards, for 1 year only (DPDP Rules 2025 rule 8(3)): the audit log, consent records, open complaints.
+exports.lpDeleteMyAccount = onCall({ timeoutSeconds: 300 }, async (req) => {
+  const uid = needAuth(req);
+  if (req.data?.confirm !== "DELETE") throw new HttpsError("invalid-argument", "Type DELETE to confirm");
+  const u = (await db.doc(`users/${uid}`).get()).data() || {};
+  if (["admin", "moderator"].includes(u.role)) throw new HttpsError("failed-precondition", "Staff accounts must have their admin role removed by another admin before they can be deleted");
+  const email = req.auth.token?.email || u.email || "";
+  await db.doc(`deletedAccounts/${uid}`).set({
+    deletedAt: FieldValue.serverTimestamp(), emailHash: crypto.createHash("sha256").update(email.toLowerCase()).digest("hex"),
+    hadBusiness: (await db.doc(`businesses/${uid}`).get()).exists,
+  });
+  audit("account_deleted", { actor: uid });
+  // hide the business and its offers immediately, then delete the login; the rest is purged by the queue
+  await db.doc(`users/${uid}`).delete();
+  const biz = db.doc(`businesses/${uid}`);
+  if ((await biz.get()).exists) await biz.update({ status: "suspended", statusNote: "Account deleted" });
+  try { await getAuth().deleteUser(uid); } catch (e) { if (e.code !== "auth/user-not-found") throw e; }
+  if (!(await enqueue("lpPurgeUserTask", { uid }, 10))) await purgeUser(uid);
+  return { ok: true };
+});
+
+// ---------------------------------------------------------------- grievances (IT Rules 2021, Consumer Protection (E-Commerce) Rules 2020)
+// Every complaint gets a ticket number. We acknowledge within 24 hours and resolve within 15 days.
+const GRIEVANCE_TYPES = ["Offer or business", "My account or data (privacy)", "A review", "Payments or plans", "Something else"];
+exports.lpSubmitGrievance = onCall(async (req) => {
+  const uid = needAuth(req);
+  await rateLimit(uid, "grievance", 5, 86400);
+  const subject = str(req.data?.subject, 120), details = str(req.data?.details, 2000);
+  const type = GRIEVANCE_TYPES.includes(req.data?.type) ? req.data.type : "Something else";
+  if (subject.length < 3 || details.length < 10) throw new HttpsError("invalid-argument", "Please add a subject and some details");
+  const ticket = "LP" + Date.now().toString(36).toUpperCase().slice(-6) + crypto.randomInt(10, 99);
+  const now = Date.now();
+  await db.doc(`grievances/${ticket}`).set({
+    ticket, userId: uid, email: req.auth.token?.email || "", type, subject, details, status: "open", reply: "",
+    createdAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(),
+    ackDue: Timestamp.fromMillis(now + DAY), resolveDue: Timestamp.fromMillis(now + 15 * DAY),
+  });
+  audit("grievance", { actor: uid, ticket });
+  return { ticket };
+});
+
+exports.lpAdminListGrievances = onCall(async (req) => {
+  await needAdmin(req);
+  const status = ["open", "acknowledged", "resolved", "rejected"].includes(req.data?.status) ? req.data.status : "open";
+  const snap = await db.collection("grievances").where("status", "==", status).orderBy("createdAt", "desc").limit(200).get();
+  return snap.docs.map((d) => plain({ id: d.id, ...d.data() }));
+});
+
+exports.lpAdminUpdateGrievance = onCall(async (req) => {
+  const me = await needAdmin(req);
+  const status = req.data?.status;
+  if (!["acknowledged", "resolved", "rejected"].includes(status)) throw new HttpsError("invalid-argument", "Unknown status");
+  const ref = db.doc(`grievances/${str(req.data?.ticket, 40)}`);
+  if (!(await ref.get()).exists) throw new HttpsError("not-found", "Ticket not found");
+  await ref.update({ status, reply: str(req.data?.reply, 2000), handledBy: me, updatedAt: FieldValue.serverTimestamp() });
+  audit("admin_grievance", { actor: me, ticket: ref.id, status });
+  return { ok: true };
+});
+
+// ---------------------------------------------------------------- monitoring
+// Crashes in the app are sent here and show up in Google Cloud Error Reporting / Logging (filter: source="client").
+exports.lpLogClientError = onCall({ maxInstances: 3 }, async (req) => {
+  const d = req.data || {};
+  console.error(JSON.stringify({
+    severity: "ERROR", source: "client", message: `Client error: ${str(d.message, 500)}`, stack_trace: str(d.stack, 3000),
+    url: str(d.url, 300), app: str(d.app, 20), version: str(d.version, 20), uid: req.auth?.uid || null,
+  }));
+  return { ok: true };
 });

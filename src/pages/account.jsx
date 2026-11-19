@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { DEMO_ACCOUNTS, api, isLive } from "../api/index.js";
 import { BackButton, Empty, NeedLogin, PlanCard, Spinner } from "../components.jsx";
-import { APP_NAME, INDIAN_STATES, IS_OWNER_APP, PLANS, SUPPORT_EMAIL } from "../lib/config.js";
+import { APP_NAME, INDIAN_STATES, IS_NATIVE, IS_OWNER_APP, PLANS, SUPPORT_EMAIL } from "../lib/config.js";
+import { ConsentBoxes, NOTICE_ITEMS, consentPayload } from "./privacy.jsx";
 import { ago, day, errText, prettyPhone, rupee, validPhone } from "../lib/format.js";
 import { navigate, useApp } from "../state.jsx";
 
@@ -21,6 +22,8 @@ function SubscribeInner({ plan }) {
     </Empty>
   );
   const p = PLANS[plan], s = subs[plan];
+  // Google Play: app features can't be sold through an outside payment gateway inside the app.
+  if (IS_NATIVE && !s?.active) return <Empty icon="📱" title="Plans aren't available in the app">Your account doesn't have an active {p.name} right now.</Empty>;
 
   const pay = async () => {
     if (plan === "customer" && !validPhone(profile?.phone)) { setErr("Add your phone number in Account first, so owners can reach you."); return; }
@@ -61,9 +64,10 @@ function SubscribeInner({ plan }) {
 
 // ------------------------------------------------------------------ Login / sign up
 export function Login({ next = "/" }) {
-  const { session, toast } = useApp();
+  const { session, toast, refresh } = useApp();
   const [tab, setTab] = useState("login");
   const [f, setF] = useState({ name: "", phone: "", email: "", password: "" });
+  const [consent, setConsent] = useState({ adult: false, agree: false });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
@@ -84,13 +88,16 @@ export function Login({ next = "/" }) {
     if (tab === "signup") {
       if (!f.name.trim()) return setErr("Please enter your name");
       if (!validPhone(f.phone)) return setErr("Please enter a valid Indian mobile number (+91)");
+      if (!consent.adult) return setErr("You must be 18 or older to use " + APP_NAME);
+      if (!consent.agree) return setErr("Please read and agree to the privacy notice to continue");
     }
     setBusy(true);
     try {
       if (tab === "login") await api.signIn(f.email, f.password);
       else {
-        const r = await api.signUp({ email: f.email.trim(), password: f.password, name: f.name.trim(), phone: f.phone.trim() });
+        const r = await api.signUp({ email: f.email.trim(), password: f.password, name: f.name.trim(), phone: f.phone.trim(), consent: consentPayload(consent) });
         if (r?.needsConfirmation) { toast("Check your email to confirm your account"); setBusy(false); setTab("login"); return; }
+        await refresh();
       }
       toast(tab === "login" ? "Welcome back!" : `Welcome to ${APP_NAME}!`);
     } catch (x) { setErr(errText(x)); }
@@ -119,11 +126,16 @@ export function Login({ next = "/" }) {
         </>}
         <div className="fld"><label>Email</label><input type="email" autoComplete="email" value={f.email} onChange={(e) => set("email", e.target.value)} /></div>
         {tab !== "reset" && <div className="fld"><label>Password</label><input type="password" autoComplete={tab === "login" ? "current-password" : "new-password"} value={f.password} onChange={(e) => set("password", e.target.value)} /></div>}
+        {tab === "signup" && <>
+          <details className="box small"><summary style={{ cursor: "pointer", fontWeight: 600 }}>What we collect and why</summary>
+            {NOTICE_ITEMS.map((n) => <div key={n.data} style={{ paddingTop: 6 }}><b>{n.data}</b><div className="muted">{n.why}</div></div>)}</details>
+          <ConsentBoxes value={consent} onChange={setConsent} />
+        </>}
         {err && <div className="error">{err}</div>}
         <button className="btn main" disabled={busy}>{busy ? "Please wait…" : tab === "login" ? "Log in" : tab === "signup" ? "Create account" : "Send reset link"}</button>
         {tab === "login" && <button type="button" className="link" onClick={() => setTab("reset")}>Forgot password?</button>}
         {tab === "reset" && <button type="button" className="link" onClick={() => setTab("login")}>Back to log in</button>}
-        {tab === "signup" && <div className="note" style={{ marginTop: 0 }}>By signing up you agree to our <a className="link" href="#/terms">terms</a>, <a className="link" href="#/privacy">privacy policy</a> and <a className="link" href="#/refund">refund policy</a>. {APP_NAME} is available in India only.</div>}
+        {tab === "signup" && <div className="note" style={{ marginTop: 0 }}>{APP_NAME} is available in India only.</div>}
       </form>
       {!isLive && (
         <div className="pad">
@@ -133,59 +145,13 @@ export function Login({ next = "/" }) {
       )}
       {!IS_OWNER_APP && <div className="pad center"><a className="link" href="#/">← Browse offers without logging in</a></div>}
       <div className="center small muted" style={{ paddingBottom: 24 }}>
-        <a href="#/terms">Terms</a> · <a href="#/privacy">Privacy</a> · <a href="#/refund">Refunds</a> · <a href="#/contact">Contact</a>
+        <a href="#/terms">Terms</a> · <a href="#/privacy">Privacy</a> · <a href="#/refund">Refunds</a> · <a href="#/contact">Contact</a> · <a href="#/delete-account">Delete account</a>
       </div>
     </div>
   );
 }
 
 // ------------------------------------------------------------------ Legal & help
-export function Terms() {
-  return (
-    <>
-      <div style={{ position: "relative", height: 62 }}><BackButton /></div>
-      <div className="legal">
-        <h1 className="title">Terms of use & disclaimer</h1>
-        <p className="muted">Template text: have a lawyer review it before launch.</p>
-        <h2>1. What {APP_NAME} is</h2>
-        <p>{APP_NAME} is a listing platform. Businesses ("owners") post offers. Customers with an active Customer Pass can see an owner's contact number and contact them, or share their own number with the owner. {APP_NAME} does not sell, book, deliver or guarantee any offer.</p>
-        <h2>2. The deal is between customer and owner</h2>
-        <p>Any agreement, payment, delivery or service happens directly between the customer and the owner. {APP_NAME} is not a party to it and is not responsible for the quality, safety, legality or availability of any offer, or for any loss, dispute or misuse arising from it.</p>
-        <h2>3. Subscriptions</h2>
-        <p>The Customer Pass ({rupee(PLANS.customer.price)}/month) and Owner Pro ({rupee(PLANS.owner.price)}/month) renew monthly until cancelled. Cancelling stops the next renewal; the plan stays active until the end of the paid period. Fees are for access to the platform and are not refundable for partial months, except where the law requires.</p>
-        <h2>4. Owners' responsibilities</h2>
-        <p>Owners must post only genuine offers they can honour, keep their contact number correct, hold any licences their business needs, and not post illegal, unsafe, misleading or prohibited items. Owners are responsible for their offers and for how they use customers' numbers. Customer numbers may be used only to respond about the offer they were shared for, never for spam or resale.</p>
-        <h2>5. Customers' responsibilities</h2>
-        <p>Customers should verify an offer and the owner before paying anything. Never pay an advance to someone you haven't verified. Use owners' numbers only to ask about their offers.</p>
-        <h2>6. Verification, reports and removal</h2>
-        <p>We verify businesses before their offers are shown, but verification is not a guarantee. Anyone can report an offer. We may remove offers or suspend accounts that break these terms, without refund of subscription fees.</p>
-        <h2>7. Contact</h2>
-        <p>Grievances and questions: see <a className="link" href="#/help">Help & support</a>.</p>
-      </div>
-    </>
-  );
-}
-
-export function Privacy() {
-  return (
-    <>
-      <div style={{ position: "relative", height: 62 }}><BackButton /></div>
-      <div className="legal">
-        <h1 className="title">Privacy policy</h1>
-        <p className="muted">Template text: have a lawyer review it against India's Digital Personal Data Protection Act before launch.</p>
-        <h2>What we collect</h2>
-        <p>Your name, email and phone number; for owners, business details, location and contact number; your subscriptions; offers you view or contact; and reports you make. Payments are processed by Razorpay; we don't store card or UPI details.</p>
-        <h2>Who sees your number</h2>
-        <p>A customer's phone number is shared with an owner only when the customer taps "Share my number" on that owner's offer. An owner's contact number is shown only to customers with an active Customer Pass.</p>
-        <h2>How we use data</h2>
-        <p>To run the platform, show nearby offers, process subscriptions, prevent misuse and provide support. We don't sell personal data.</p>
-        <h2>Your choices</h2>
-        <p>You can edit your details in Account at any time. To delete your account and data, contact us through Help & support.</p>
-      </div>
-    </>
-  );
-}
-
 export function Help() {
   return (
     <>
@@ -198,8 +164,12 @@ export function Help() {
         <p>Open the offer and tap "Report this offer". Our team reviews every report and can remove offers or suspend businesses.</p>
         <h2>Cancel a subscription</h2>
         <p>Account → your plan → Cancel. You keep access until the end of the paid month.</p>
+        <h2>Rate a business</h2>
+        <p>After you contact a business through {APP_NAME}, open its offer (or My contacts) and tap "Rate". Only real contacts can review, so ratings stay honest.</p>
+        <h2>Your data</h2>
+        <p>Account → Privacy & your data: download everything we hold about you, or delete your account.</p>
         <h2>Contact us</h2>
-        <p>Email <a className="link" href={"mailto:" + SUPPORT_EMAIL}>{SUPPORT_EMAIL}</a>. We reply within 2 working days.</p>
+        <p>Email <a className="link" href={"mailto:" + SUPPORT_EMAIL}>{SUPPORT_EMAIL}</a>. We reply within 2 working days. For complaints, raise a <a className="link" href="#/grievance">ticket</a>.</p>
       </div>
     </>
   );
@@ -228,23 +198,6 @@ export function Refund() {
   );
 }
 
-export function Contact() {
-  return (
-    <>
-      <div style={{ position: "relative", height: 62 }}><BackButton /></div>
-      <div className="legal">
-        <h1 className="title">Contact us</h1>
-        <p>We usually reply within 2 working days.</p>
-        <h2>Support and grievances</h2>
-        <p>Email: <a className="link" href={"mailto:" + SUPPORT_EMAIL}>{SUPPORT_EMAIL}</a></p>
-        <p className="muted">Add your registered business name, address, phone number and grievance officer here before launch (required for Indian e-commerce rules and payment-gateway KYC).</p>
-        <h2>Report an offer</h2>
-        <p>Open the offer and tap "Report this offer". Our team reviews every report.</p>
-      </div>
-    </>
-  );
-}
-
 // ------------------------------------------------------------------ Admin & moderators
 export function Admin() {
   return <NeedLogin why="Log in as admin"><AdminInner /></NeedLogin>;
@@ -254,7 +207,7 @@ function AdminInner() {
   const [tab, setTab] = useState("overview");
   if (!isStaff) return <Empty icon="⛔" title="Admins only">Your account doesn't have admin access.</Empty>;
   const tabs = isAdmin
-    ? [["overview", "Overview"], ["businesses", "Businesses"], ["reports", "Reports"], ["users", "Users"], ["plans", "Plans"], ["team", "Team"]]
+    ? [["overview", "Overview"], ["businesses", "Businesses"], ["reports", "Reports"], ["complaints", "Complaints"], ["users", "Users"], ["plans", "Plans"], ["team", "Team"]]
     : [["overview", "Overview"], ["businesses", "Businesses"], ["reports", "Reports"]];
   return (
     <>
@@ -266,6 +219,7 @@ function AdminInner() {
       {tab === "overview" && <AdminOverview toast={toast} go={setTab} />}
       {tab === "businesses" && <AdminBusinesses toast={toast} />}
       {tab === "reports" && <AdminReports toast={toast} />}
+      {tab === "complaints" && isAdmin && <AdminComplaints toast={toast} />}
       {tab === "users" && isAdmin && <AdminUsers toast={toast} />}
       {tab === "plans" && isAdmin && <AdminPlans toast={toast} />}
       {tab === "team" && isAdmin && <AdminTeam toast={toast} />}
@@ -323,6 +277,8 @@ function AdminOverview({ toast, go }) {
         <Kpi n={t.leads30} l="Numbers shared (30 days)" />
         <Kpi n={t.suspended} l="Suspended businesses" />
         <Kpi n={t.archived} l="Archived offers" />
+        <Kpi n={t.reviews} l="Published reviews" />
+        {isAdmin && <Kpi n={t.openGrievances} l="Open complaints" onClick={() => go("complaints")} />}
       </div>
       <div className="sect"><h3>By city</h3>
         <select value={stateFilter} onChange={(e) => setStateFilter(e.target.value)} aria-label="Filter by state"><option value="">All states</option>{states.map((s) => <option key={s}>{s}</option>)}</select>
@@ -359,7 +315,7 @@ function AdminBusinesses({ toast }) {
       {!list ? <Spinner /> : list.length === 0 ? <Empty icon="✅" title="Nothing here" /> : list.map((b) => (
         <div className="panel" key={b.id}>
           <div className="row"><b>{b.name}</b><span className={"pill " + (b.status === "verified" ? "p-ok" : b.status === "pending" ? "p-warn" : "p-bad")}>{b.status}</span></div>
-          <div className="muted small">{b.category} · {b.address || "-"}, {b.area}, {b.city}, {b.state || "state missing"}</div>
+          <div className="muted small">{(b.categories || [b.category]).join(", ")}{b.rating?.count ? ` · ★ ${b.rating.avg} (${b.rating.count})` : ""} · {b.address || "-"}, {b.area}, {b.city}, {b.state || "state missing"}</div>
           <div className="muted small">📞 {b.phone ? prettyPhone(b.phone) : "no number"} · {b.lat != null ? "📍 location set" : "no map location"}{b.createdAt ? " · joined " + ago(b.createdAt) : ""}</div>
           {b.flags?.length > 0 && <div className="gap" style={{ flexWrap: "wrap", marginTop: 6 }}>{b.flags.map((f) => <span key={f} className="pill p-bad">⚠️ {f}</span>)}</div>}
           {b.statusNote && <div className="muted small">Note: {b.statusNote}</div>}
@@ -384,16 +340,54 @@ function AdminReports({ toast }) {
   };
   return !list ? <Spinner /> : list.length === 0 ? <Empty icon="🎉" title="No open reports" /> : list.map((r) => (
     <div className="panel" key={r.id}>
-      <div className="row"><b>{r.reason}</b><span className="muted small">{r.createdAt ? ago(r.createdAt) : ""}</span></div>
+      <div className="row"><b>{r.type === "review" ? "Review: " : ""}{r.reason}</b><span className="muted small">{r.createdAt ? ago(r.createdAt) : ""}</span></div>
       <div className="muted small">{[r.city, r.state].filter(Boolean).join(", ")}</div>
       {r.details && <div className="muted small" style={{ marginTop: 4 }}>{r.details}</div>}
-      <div className="box small" style={{ marginTop: 8 }}>{r.offer ? <><a className="link" href={"#/offer/" + r.offer.id}>{r.offer.title}</a> · {r.offer.business?.name} · {r.offer.status}</> : "Offer already archived"}</div>
+      {r.type === "review" ? (
+        <div className="box small" style={{ marginTop: 8 }}>{r.review ? <>⭐ {r.review.rating} by {r.review.name} on <b>{r.review.businessName}</b>: "{r.review.text || "(no text)"}" · {r.review.status}</> : "Review already deleted"}</div>
+      ) : (
+        <div className="box small" style={{ marginTop: 8 }}>{r.offer ? <><a className="link" href={"#/offer/" + r.offer.id}>{r.offer.title}</a> · {r.offer.business?.name} · {r.offer.status}</> : "Offer already archived"}</div>
+      )}
       <div className="gap" style={{ marginTop: 10, flexWrap: "wrap" }}>
         {r.offer && r.offer.status !== "removed" && <button className="btn danger sm" onClick={() => resolve(r, "actioned", true)}>Remove offer</button>}
+        {r.review && r.review.status !== "hidden" && <button className="btn danger sm" onClick={() => resolve(r, "actioned", true)}>Hide review</button>}
         <button className="btn ghost sm" onClick={() => resolve(r, "dismissed", false)}>Dismiss</button>
       </div>
     </div>
   ));
+}
+
+// Complaint tickets: acknowledge within 24 hours, resolve within 15 days (IT Rules 2021).
+function AdminComplaints({ toast }) {
+  const [status, setStatus] = useState("open");
+  const [list, setList] = useState(null);
+  const [reply, setReply] = useState({});
+  const load = () => { setList(null); api.adminGrievances(status).then(setList).catch((e) => { toast(errText(e)); setList([]); }); };
+  useEffect(() => { load(); }, [status]); // eslint-disable-line react-hooks/exhaustive-deps
+  const update = async (g, st) => {
+    try { await api.adminUpdateGrievance(g.ticket, st, reply[g.ticket] || g.reply || ""); toast(`Ticket ${g.ticket}: ${st}`); load(); } catch (e) { toast(errText(e)); }
+  };
+  const due = (g) => { const created = typeof g.createdAt === "string" ? Date.parse(g.createdAt) : g.createdAt; return created ? created + 15 * 86400000 : null; };
+  return (
+    <>
+      <div className="chips" style={{ paddingTop: 0 }}>{["open", "acknowledged", "resolved", "rejected"].map((s) => <button key={s} className={"chip " + (status === s ? "on" : "")} onClick={() => setStatus(s)}>{s}</button>)}</div>
+      {!list ? <Spinner /> : list.length === 0 ? <Empty icon="📭" title="No complaints here" /> : list.map((g) => (
+        <div className="panel" key={g.ticket}>
+          <div className="row"><b>{g.subject}</b><span className="muted small">{g.ticket}</span></div>
+          <div className="muted small">{g.type} · {g.email}{due(g) ? " · resolve by " + day(due(g)) : ""}</div>
+          <div className="small" style={{ marginTop: 6, whiteSpace: "pre-line" }}>{g.details}</div>
+          {["open", "acknowledged"].includes(g.status) ? <>
+            <div className="fld" style={{ marginTop: 8 }}><textarea rows="2" placeholder="Reply to the user (they see this in Complaints)" value={reply[g.ticket] ?? g.reply ?? ""} onChange={(e) => setReply({ ...reply, [g.ticket]: e.target.value })} /></div>
+            <div className="gap" style={{ marginTop: 8, flexWrap: "wrap" }}>
+              {g.status === "open" && <button className="btn ghost sm" onClick={() => update(g, "acknowledged")}>Acknowledge</button>}
+              <button className="btn main sm" onClick={() => update(g, "resolved")}>Resolve</button>
+              <button className="btn ghost sm" onClick={() => update(g, "rejected")}>Close without action</button>
+            </div>
+          </> : g.reply && <div className="box small" style={{ marginTop: 8 }}>Reply: {g.reply}</div>}
+        </div>
+      ))}
+    </>
+  );
 }
 
 function AdminUsers({ toast }) {

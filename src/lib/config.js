@@ -7,6 +7,26 @@ export const WEBSITE_URL = "https://lastpick-ce569.web.app";
 export const APP_VARIANT = import.meta.env?.VITE_APP_VARIANT || "web";
 export const IS_OWNER_APP = APP_VARIANT === "owner";
 export const IS_CUSTOMER_APP = APP_VARIANT === "customer";
+// true inside the Play Store apps (Capacitor). Google Play doesn't allow selling app features with an outside
+// payment gateway inside the app, so payment screens are hidden there (see README "Payments and Google Play").
+export const IS_NATIVE = typeof window !== "undefined" && !!window.Capacitor?.isNativePlatform?.();
+
+// ---- Legal details shown in the app (Consumer Protection (E-Commerce) Rules 2020, IT Rules 2021, DPDP Act 2023) ----
+// Fill these in .env.production before launch. As a personal (individual) publisher, use your own legal name and address.
+const env = import.meta.env || {};
+export const LEGAL = {
+  operator: env.VITE_LEGAL_NAME || "",
+  address: env.VITE_LEGAL_ADDRESS || "",
+  grievanceOfficer: env.VITE_GRIEVANCE_OFFICER || "",
+  grievanceEmail: env.VITE_GRIEVANCE_EMAIL || SUPPORT_EMAIL,
+  grievancePhone: env.VITE_GRIEVANCE_PHONE || "",
+};
+// Bump when the privacy notice or terms change: everyone is asked to accept again. Keep in sync with functions/index.js.
+export const CONSENT_VERSION = "2026-11-19";
+// A business picks a main category plus up to 2 more, and can post only in those.
+export const MAX_CATEGORIES = 3;
+export const GRIEVANCE_TYPES = ["Offer or business", "My account or data (privacy)", "A review", "Payments or plans", "Something else"];
+export const REVIEW_REPORT_REASONS = ["Fake or paid review", "Abusive or hateful", "Personal information", "Not about this business", "Something else"];
 
 // Prices shown in the app. The amount actually charged comes from the Razorpay plans
 // (RAZORPAY_PLAN_CUSTOMER / RAZORPAY_PLAN_OWNER), so keep both in sync.
@@ -111,4 +131,5 @@ export const MAJOR_CITIES = [
 export const cityKey = (name) => String(name || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 
 // Data retention (days). The nightly cleanup job in functions/index.js uses the same numbers.
-export const RETENTION = { endedOfferVisibleDays: 7, archiveDays: 365, leadsDays: 180, contactsDays: 180, reportsDays: 365 };
+// Logs of number exchanges are kept 1 year (DPDP Rules 2025, rule 8(3)). Keep in sync with functions/index.js.
+export const RETENTION = { endedOfferVisibleDays: 7, archiveDays: 365, leadsDays: 365, contactsDays: 365, reportsDays: 365, auditDays: 365, closedGrievanceDays: 730 };

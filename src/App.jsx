@@ -3,12 +3,17 @@ import { api, isLive } from "./api/index.js";
 import { Empty, Spinner } from "./components.jsx";
 import { Account, Contacts, Home, MapPage, OfferPage } from "./pages/customer.jsx";
 import { BusinessPage, OwnerDashboard, OwnerGate, OwnerLeads, OwnerOffers, PostOffer } from "./pages/owner.jsx";
-import { Admin, Contact, Help, Login, Privacy, Refund, Subscribe, Terms } from "./pages/account.jsx";
+import { Admin, Help, Login, Refund, Subscribe } from "./pages/account.jsx";
+import { ConsentGate, Contact, DeleteAccountInfo, Grievance, Privacy, PrivacyCenter, Terms } from "./pages/privacy.jsx";
+import { OwnerReviews } from "./pages/reviews.jsx";
+import { CONSENT_VERSION } from "./lib/config.js";
 import { match, navigate, useApp, useRoute } from "./state.jsx";
 import { IS_OWNER_APP } from "./lib/config.js";
 
 const CUSTOMER_NAV = [["/", "🏠", "Offers"], ["/map", "🗺️", "Map"], ["/contacts", "📇", "Contacts"], ["/account", "👤", "Account"]];
 const OWNER_NAV = [["/owner", "📊", "Dashboard"], ["/owner/post", "➕", "Post"], ["/owner/leads", "📇", "Leads"], ["/owner/offers", "🗂️", "My offers"], ["/account", "👤", "Account"]];
+// pages anyone can open without accepting the privacy notice first
+const OPEN_PAGES = ["/privacy", "/terms", "/contact", "/help", "/refund", "/grievance", "/delete-account", "/account/privacy", "/login"];
 
 function Page({ path, query }) {
   let m;
@@ -24,6 +29,10 @@ function Page({ path, query }) {
   if (path === "/owner/leads") return <OwnerGate><OwnerLeads /></OwnerGate>;
   if (path === "/owner/offers") return <OwnerGate allowWithoutPlan><OwnerOffers /></OwnerGate>;
   if (path === "/owner/business") return <BusinessPage />;
+  if (path === "/owner/reviews") return <OwnerGate allowWithoutPlan><OwnerReviews /></OwnerGate>;
+  if (path === "/account/privacy") return <PrivacyCenter />;
+  if (path === "/delete-account") return <DeleteAccountInfo />;
+  if (path === "/grievance") return <Grievance />;
   if (path === "/admin") return <Admin />;
   if (path === "/terms") return <Terms />;
   if (path === "/privacy") return <Privacy />;
@@ -48,7 +57,8 @@ function NewLeadsDot() {
 
 export default function App() {
   const { path, query } = useRoute();
-  const { loading, mode, setMode } = useApp();
+  const { loading, mode, setMode, session, profile } = useApp();
+  const needsConsent = !!session && !!profile && profile.consentVersion !== CONSENT_VERSION && !OPEN_PAGES.includes(path);
   const ownerArea = path.startsWith("/owner");
 
   // the Business app always opens on the owner dashboard
@@ -67,8 +77,8 @@ export default function App() {
   return (
     <div className="shell">
       {!isLive && <div className="demo-bar">Demo mode · data stays in this browser · no real payments</div>}
-      <main className="main">{loading ? <Spinner /> : <Page path={path} query={query} />}</main>
-      {showNav && (
+      <main className="main">{loading ? <Spinner /> : needsConsent ? <ConsentGate /> : <Page path={path} query={query} />}</main>
+      {showNav && !needsConsent && (
         <nav className="nav" aria-label="Main">
           {nav.map(([to, icon, label]) => (
             <a key={to} href={"#" + to} className={path === to ? "on" : ""} aria-current={path === to ? "page" : undefined}>

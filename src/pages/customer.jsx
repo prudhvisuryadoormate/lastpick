@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/index.js";
 import { BackButton, CategoryChips, Countdown, Disclaimer, Empty, MapView, NeedLogin, OfferCard, OfferImage, Sheet, Spinner, catLabel } from "../components.jsx";
-import { APP_NAME, CATEGORIES, IS_CUSTOMER_APP, IS_OWNER_APP, MAJOR_CITIES, PLANS, REPORT_REASONS, TINTS, WEBSITE_URL, cityKey } from "../lib/config.js";
+import { APP_NAME, CATEGORIES, IS_CUSTOMER_APP, IS_NATIVE, IS_OWNER_APP, MAJOR_CITIES, PLANS, REPORT_REASONS, TINTS, WEBSITE_URL, cityKey } from "../lib/config.js";
+import { RatingBadge, ReviewSheet, ReviewsBlock } from "./reviews.jsx";
 import { ago, day, discount, distanceKm, errText, kmText, prettyPhone, rupee, telLink, timeLeft, validPhone, waLink } from "../lib/format.js";
 import { navigate, nearestCity, useApp, useNow } from "../state.jsx";
 import { RADIUS_OPTIONS, validPincode } from "../lib/geo.js";
@@ -203,6 +204,7 @@ export function OfferPage({ id }) {
   const [shared, setShared] = useState(false);
   const [busy, setBusy] = useState(false);
   const [reporting, setReporting] = useState(false);
+  const [confirmShare, setConfirmShare] = useState(false);
   const now = useNow();
   const own = !!business && offer?.businessId === business.id;
 
@@ -233,10 +235,14 @@ export function OfferPage({ id }) {
 
   const share = async () => {
     if (!validPhone(profile?.phone)) { toast("Add your phone number in Account first"); navigate("/account"); return; }
-    setBusy(true);
+    setBusy(true); setConfirmShare(false);
     try { await api.shareNumber(offer.id); setShared(true); toast(`Your number was sent to ${offer.business?.name}`); }
     catch (e) { toast(errText(e)); }
     setBusy(false);
+  };
+  const askShare = () => {
+    if (!validPhone(profile?.phone)) { toast("Add your phone number in Account first"); navigate("/account"); return; }
+    setConfirmShare(true);
   };
 
   return (
@@ -259,7 +265,7 @@ export function OfferPage({ id }) {
         <div className="panel" style={{ margin: "14px 0 0" }}>
           <div className="owner-row">
             <div className="avatar">{(offer.business?.name || "?")[0]}</div>
-            <div className="grow"><b>{offer.business?.name}</b><div className="verified">✔ Verified owner · {offer.business?.area}{offer.business?.city ? ", " + offer.business.city : ""}</div></div>
+            <div className="grow"><b>{offer.business?.name}</b> <RatingBadge rating={offer.business?.rating} /><div className="verified">✔ Verified owner · {offer.business?.area}{offer.business?.city ? ", " + offer.business.city : ""}</div></div>
           </div>
 
           {own ? (
@@ -270,6 +276,9 @@ export function OfferPage({ id }) {
               {freeMode ? <>
                 <div className="muted" style={{ marginTop: 6 }}>Log in to see the owner's number, call or WhatsApp them, and share your number. Free during launch.</div>
                 <a className="btn main" style={{ marginTop: 12 }} href={`#/login?next=${encodeURIComponent("/offer/" + offer.id)}`}>🔓 Log in to see the number</a>
+              </> : IS_NATIVE ? <>
+                <div className="muted" style={{ marginTop: 6 }}>{session ? `Your account doesn't have an active ${PLANS.customer.name}.` : "Log in to see the owner's number."}</div>
+                {!session && <a className="btn main" style={{ marginTop: 12 }} href={`#/login?next=${encodeURIComponent("/offer/" + offer.id)}`}>Log in</a>}
               </> : <>
                 <div className="muted" style={{ marginTop: 6 }}>Subscribe to see the owner's number, call or WhatsApp them, and share your number with them.</div>
                 <a className="btn main" style={{ marginTop: 12 }} href={session ? "#/subscribe/customer" : `#/login?next=${encodeURIComponent("/offer/" + offer.id)}`}>
@@ -289,7 +298,7 @@ export function OfferPage({ id }) {
                   : <button className="btn ghost" disabled>WhatsApp off</button>}
               </div>
               {!ended && (
-                <button className="btn ghost" style={{ marginTop: 10 }} disabled={shared || busy} onClick={share}>
+                <button className="btn ghost" style={{ marginTop: 10 }} disabled={shared || busy} onClick={askShare}>
                   {shared ? "✓ Your number was shared with the owner" : busy ? "Sharing…" : `🙋 Share my number${profile?.phone ? ` (${prettyPhone(profile.phone)})` : ""} with the owner`}
                 </button>
               )}
@@ -297,10 +306,19 @@ export function OfferPage({ id }) {
           )}
         </div>
 
+        <ReviewsBlock business={offer.business} own={own} />
         <Disclaimer />
         {session && !own && <button className="btn ghost sm" style={{ marginTop: 12 }} onClick={() => setReporting(true)}>🚩 Report this offer</button>}
       </div>
       {reporting && <ReportSheet offerId={offer.id} onClose={() => setReporting(false)} />}
+      {confirmShare && (
+        <Sheet onClose={() => setConfirmShare(false)}>
+          <h2 className="title" style={{ fontSize: 19 }}>Share your number?</h2>
+          <p className="muted"><b>{offer.business?.name}</b> will get your name ({profile?.name || "not set"}) and mobile number <b>{prettyPhone(profile?.phone)}</b>, so they can call or WhatsApp you about "{offer.title}".</p>
+          <p className="muted small">They may use it only for this offer. You can report misuse from this page. See the <a className="link" href="#/privacy">privacy notice</a>.</p>
+          <div className="gap"><button className="btn ghost" onClick={() => setConfirmShare(false)}>Cancel</button><button className="btn main" onClick={share}>Share my number</button></div>
+        </Sheet>
+      )}
     </>
   );
 }
@@ -336,6 +354,7 @@ function ContactsInner() {
   const { isCustomer } = useApp();
   const [list, setList] = useState(null);
   const [phones, setPhones] = useState({});
+  const [rating, setRating] = useState(null);
   useEffect(() => { if (isCustomer) api.myContacts().then(setList).catch(() => setList([])); }, [isCustomer]);
   const reveal = async (offerId) => {
     try { const c = await api.revealContact(offerId); setPhones((p) => ({ ...p, [offerId]: c })); } catch (e) { setPhones((p) => ({ ...p, [offerId]: { error: errText(e) } })); }
@@ -361,11 +380,20 @@ function ContactsInner() {
             </a>
             {p?.phone && <a className="icon-btn" aria-label="Call" href={telLink(p.phone)} onClick={() => api.logContact(c.offer.id, "Called")}>📞</a>}
             {p?.phone && p.whatsapp && <a className="icon-btn wa" aria-label="WhatsApp" target="_blank" rel="noreferrer" href={waLink(p.phone, `Hi, about your ${APP_NAME} offer: "${c.offer.title}"`)} onClick={() => api.logContact(c.offer.id, "WhatsApp")}>💬</a>}
+            {c.offer.businessId && <button className="icon-btn" aria-label={`Rate ${c.offer.business?.name}`} onClick={() => setRating(c.offer)}>⭐</button>}
           </div>
         );
       })}
+      {rating && <ContactReview offer={rating} onClose={() => setRating(null)} />}
     </>
   );
+}
+
+function ContactReview({ offer, onClose }) {
+  const [existing, setExisting] = useState(undefined);
+  useEffect(() => { api.myReview(offer.businessId).then(setExisting).catch(() => setExisting(null)); }, [offer.businessId]);
+  if (existing === undefined) return null;
+  return <ReviewSheet businessId={offer.businessId} businessName={offer.business?.name} existing={existing} onClose={onClose} onDone={onClose} />;
 }
 
 // ------------------------------------------------------------------ Account
@@ -399,6 +427,7 @@ function AccountInner() {
       {freeMode && <div className="status ok"><span style={{ fontSize: 24 }}>🎉</span><div className="grow"><b>Free during launch</b><div className="muted small">All features are unlocked. No subscription needed.</div></div></div>}
       {!freeMode && ["customer", "owner"].map((plan) => {
         const s = subs[plan];
+        if (IS_NATIVE && !s?.active) return null; // Google Play: no outside payments inside the app
         if (plan === "owner" && (IS_CUSTOMER_APP || (!s && !business))) return null;
         if (plan === "customer" && IS_OWNER_APP) return null;
         return (
@@ -432,9 +461,11 @@ function AccountInner() {
             ? <a className="menu-item" href="#/owner/business">🏪 Business profile<span className="chev">›</span></a>
             : <button className="menu-item" onClick={() => { setMode("owner"); navigate("/owner"); }}>🏪 {business ? "Switch to owner mode" : "Post offers as a business owner"}<span className="chev">›</span></button>}
         {isStaff && <a className="menu-item" href="#/admin">🛡️ {profile?.role === "moderator" ? "Moderator panel" : "Admin panel"}<span className="chev">›</span></a>}
+        <a className="menu-item" href="#/account/privacy">🔐 Privacy & your data<span className="chev">›</span></a>
         <a className="menu-item" href="#/help">🛟 Help & support<span className="chev">›</span></a>
+        <a className="menu-item" href="#/grievance">🧾 Complaints<span className="chev">›</span></a>
         <a className="menu-item" href="#/terms">📜 Terms & disclaimer<span className="chev">›</span></a>
-        <a className="menu-item" href="#/privacy">🔏 Privacy policy<span className="chev">›</span></a>
+        <a className="menu-item" href="#/privacy">🔏 Privacy notice<span className="chev">›</span></a>
         <a className="menu-item" href="#/refund">💸 Refund & cancellation policy<span className="chev">›</span></a>
         <a className="menu-item" href="#/contact">✉️ Contact us<span className="chev">›</span></a>
         <button className="menu-item" style={{ color: "var(--bad)" }} onClick={async () => { await api.signOut(); navigate("/"); }}>↩ Log out<span className="chev">›</span></button>
