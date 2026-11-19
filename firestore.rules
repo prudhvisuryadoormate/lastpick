@@ -1,0 +1,85 @@
+rules_version = '2';
+
+// LastPick Firestore rules.
+// Phone numbers are never readable directly by customers: they come from the revealContact
+// Cloud Function, which checks for an active Customer Pass. Subscriptions, leads and
+// contact logs are written only by Cloud Functions (Admin SDK bypasses these rules).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+    function isAdmin() {
+      return signedIn() && get(/databases/$(database)/documents/users/$(uid())).data.role == 'admin';
+    }
+    function ownerPlanActive() {
+      return exists(/databases/$(database)/documents/subscriptions/$(uid() + '_owner'))
+        && get(/databases/$(database)/documents/subscriptions/$(uid() + '_owner')).data.currentPeriodEnd > request.time
+        && get(/databases/$(database)/documents/subscriptions/$(uid() + '_owner')).data.status in ['active', 'cancelled'];
+    }
+    function onlyChanged(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
+
+    // ---- users: own profile; role and email are fixed ----
+    match /users/{userId} {
+      allow read: if signedIn() && (userId == uid() || isAdmin());
+      allow create: if signedIn() && userId == uid()
+        && request.resource.data.role == 'user'
+        && request.resource.data.keys().hasOnly(['name', 'phone', 'email', 'role', 'createdAt']);
+      allow update: if signedIn() && ((userId == uid() && onlyChanged(['name', 'phone'])) || isAdmin());
+    }
+
+    // ---- subscriptions: read own; written only by Cloud Functions ----
+    match /subscriptions/{subId} {
+      allow read: if signedIn() && (resource.data.userId == uid() || isAdmin());
+    }
+
+    // ---- businesses: id = owner's uid. Status is set only by admins. ----
+    match /businesses/{bizId} {
+      allow read: if resource.data.status == 'verified' || (signedIn() && (bizId == uid() || isAdmin()));
+      allow create: if signedIn() && bizId == uid()
+        && request.resource.data.ownerId == uid()
+        && request.resource.data.status == 'pending';
+      allow update: if signedIn() && (
+        (bizId == uid() && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['status', 'statusNote', 'ownerId']))
+        || isAdmin());
+    }
+
+    // ---- private contact number of a business: owner and admins only ----
+    match /businessContacts/{bizId} {
+      allow read, write: if signedIn() && (bizId == uid() || isAdmin());
+    }
+
+    // ---- offers: created by the createOffer function ----
+    match /offers/{offerId} {
+      allow read: if (resource.data.visible == true && resource.data.status == 'live')
+        || (signedIn() && (resource.data.ownerId == uid() || isAdmin()));
+      allow update: if
+        // anyone may add one view
+        (onlyChanged(['views']) && request.resource.data.views == resource.data.views + 1)
+        // owner may end their offer
+        || (signedIn() && resource.data.ownerId == uid() && onlyChanged(['status']) && request.resource.data.status == 'ended')
+        || isAdmin();
+    }
+
+    // ---- leads: customers who shared their number. Owner sees them while Owner Pro is active. ----
+    match /leads/{leadId} {
+      allow read: if signedIn() && (resource.data.customerId == uid()
+        || (resource.data.ownerId == uid() && ownerPlanActive())
+        || isAdmin());
+      allow update: if signedIn() && resource.data.ownerId == uid() && onlyChanged(['status'])
+        && request.resource.data.status in ['new', 'contacted', 'closed'];
+    }
+
+    // ---- customer's "My contacts" log: read own; written by functions ----
+    match /customerContacts/{id} {
+      allow read: if signedIn() && (resource.data.customerId == uid() || isAdmin());
+    }
+
+    // ---- reports of misuse ----
+    match /reports/{reportId} {
+      allow create: if signedIn() && request.resource.data.reporterId == uid() && request.resource.data.status == 'open';
+      allow read: if signedIn() && (resource.data.reporterId == uid() || isAdmin());
+      allow update: if isAdmin();
+    }
+  }
+}
